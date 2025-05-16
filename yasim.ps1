@@ -56,7 +56,7 @@ try {
         }
 
         $parts = $line -split '\s+' # Split by one or more whitespace characters
-        
+
         if ($parts.Length -eq 2) {
             $rawAppIdInput = $parts[0]
             $targetSpec = $parts[1]
@@ -87,10 +87,10 @@ try {
 
             Write-Host "--- Running YASI for AppID: $appId, Target: $targetSpec ---"
             $commandArgsArray = @("-a", $appId, "-c", $targetSpec) # Keep as array for clarity
-            
+
             # Display the command that will be executed
             Write-Host "Executing: & `"$PythonExecutable`" `"$YasiScriptPath`" $($commandArgsArray -join ' ')"
-            
+
             # Execute yasi.py directly, allowing its output to stream to the console
             try {
                 & $PythonExecutable $YasiScriptPath @commandArgsArray
@@ -105,7 +105,7 @@ try {
                 # This catch block handles errors if PowerShell fails to launch the process (e.g., python not found)
                 Write-Error "An error occurred while trying to launch yasi.py for AppID ${appId}: $($_.Exception.Message)"
             }
-            
+
             $gamesProcessedCount++
             Write-Host "---------------------------------"
         } else {
