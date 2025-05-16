@@ -2,8 +2,10 @@ import sys
 import time
 import requests
 import os
-import ctypes # Added for direct DLL interaction
-import argparse # Added for argument parsing
+import ctypes
+import argparse
+import json
+from datetime import datetime
 
 # --- Color Codes ---
 class Colors:
@@ -11,11 +13,12 @@ class Colors:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
     RED = '\033[91m'
-    ENDC = '\033[0m' # Resets the color
+    ENDC = '\033[0m'
 
     @staticmethod
     def _print_color(color_code, message_type, message):
-        print(f"{color_code}[{message_type}] {message}{Colors.ENDC}")
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print(f"{timestamp} {color_code}[{message_type}] {message}{Colors.ENDC}")
 
     @staticmethod
     def debug(message):
@@ -33,9 +36,59 @@ class Colors:
     def error(message):
         Colors._print_color(Colors.RED, "ERROR", message)
 
-# --- Constants ---
-USER_STEAM_VANITY_NAME = "queendom" # As per your request
-DEFAULT_MONITORING_INTERVAL_SECONDS = 300 # Check inventory every 5 minutes (300 seconds)
+# --- Global Configuration Variables ---
+USER_STEAM_ID_64 = None
+STEAM_COMMUNITY_APPID = None
+TRADING_CARD_CONTEXT_ID = None
+DEFAULT_MONITORING_INTERVAL_SECONDS = None
+
+GAME_NAME_CACHE = {} # Cache for game names
+
+# --- Config Loading Function ---
+def load_configuration():
+    global USER_STEAM_ID_64, STEAM_COMMUNITY_APPID, TRADING_CARD_CONTEXT_ID, DEFAULT_MONITORING_INTERVAL_SECONDS
+    
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    config_json_path = os.path.join(script_dir, "config.json")
+    user_json_path = os.path.join(script_dir, "user.json")
+
+    try:
+        with open(config_json_path, 'r') as f:
+            app_config = json.load(f)
+        STEAM_COMMUNITY_APPID = app_config['steam_community_appid']
+        TRADING_CARD_CONTEXT_ID = app_config['trading_card_context_id']
+        DEFAULT_MONITORING_INTERVAL_SECONDS = int(app_config['default_monitoring_interval_seconds'])
+        Colors.debug(f"Loaded application config from {config_json_path}")
+    except FileNotFoundError:
+        Colors.error(f"CRITICAL: Application configuration file 'config.json' not found in {script_dir}.")
+        Colors.error("Please ensure 'config.json' exists and is correctly formatted.")
+        sys.exit(1)
+    except (KeyError, ValueError) as e:
+        Colors.error(f"CRITICAL: Error parsing 'config.json': {e}. Check file structure and values.")
+        sys.exit(1)
+
+    try:
+        with open(user_json_path, 'r') as f:
+            user_config = json.load(f)
+        USER_STEAM_ID_64 = user_config['steam_id_64']
+        Colors.debug(f"Loaded user config from {user_json_path}")
+    except FileNotFoundError:
+        Colors.error(f"CRITICAL: User configuration file 'user.json' not found in {script_dir}.")
+        Colors.error(f"Please create it based on 'user.json.tmpl' or ensure it's in the correct location.")
+        sys.exit(1)
+    except (KeyError, ValueError) as e:
+        Colors.error(f"CRITICAL: Error parsing 'user.json': {e}. Check file structure and values (expected 'steam_id_64').")
+        sys.exit(1)
+
+    if not isinstance(USER_STEAM_ID_64, str):
+        Colors.error("CRITICAL: 'steam_id_64' in 'user.json' must be a string.")
+        sys.exit(1)
+        
+    USER_STEAM_ID_64 = USER_STEAM_ID_64.strip() # Store the stripped version
+
+    if not USER_STEAM_ID_64: # Check after stripping
+        Colors.error("CRITICAL: 'steam_id_64' in 'user.json' cannot be empty.")
+        sys.exit(1)
 
 # --- Steamworks Simulation ---
 class SteamSimulator:
@@ -45,75 +98,80 @@ class SteamSimulator:
     Requires steam_api64.dll.
     """
     def __init__(self, app_id_str):
-        self.app_id_str = str(app_id_str) # Ensure app_id is a string for the file
-        self.steam_appid_file = "steam_appid.txt"
+        self.app_id_str = str(app_id_str)
+        self.script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        self.steam_appid_file_path = os.path.join(self.script_dir, "steam_appid.txt")
         self.steam_api_dll = None
-        self._load_steam_api_dll()
 
     def _load_steam_api_dll(self):
-        """Loads steam_api64.dll and defines necessary function prototypes."""
+        if self.steam_api_dll:
+            Colors.debug("steam_api64.dll already loaded.")
+            return True
         try:
-            # Construct the path to steam_api64.dll, assuming it's in the same directory as the script.
-            dll_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "steam_api64.dll")
+            sdk_dir_path = os.path.join(self.script_dir, "sdk")
+            if not os.path.isdir(sdk_dir_path):
+                Colors.error(f"Steamworks SDK directory not found at {sdk_dir_path}")
+                Colors.error("Please ensure the 'sdk' directory from the Steamworks SDK is present in the script's directory.")
+                return False
+
+            dll_path = os.path.join(sdk_dir_path, "redistributable_bin", "win64", "steam_api64.dll")
             
             if not os.path.exists(dll_path):
                 Colors.error(f"steam_api64.dll not found at {dll_path}")
-                Colors.error("Ensure 'steam_api64.dll' from your SDK's 'redistributable_bin/win64/'")
-                Colors.error("is copied to the same directory as this yasi.py script.")
-                return
+                Colors.error("Ensure 'steam_api64.dll' is in the 'sdk/redistributable_bin/win64/' directory.")
+                return False
 
             Colors.debug(f"Attempting to load DLL: {dll_path}")
             self.steam_api_dll = ctypes.CDLL(dll_path)
             Colors.info("steam_api64.dll loaded successfully.")
 
-            # Define function prototypes for the Steam API functions we need.
-            # bool SteamAPI_InitSafe(); (Replaced SteamAPI_Init)
             self.steam_api_dll.SteamAPI_InitSafe.restype = ctypes.c_bool
             self.steam_api_dll.SteamAPI_InitSafe.argtypes = []
 
-            # void SteamAPI_RunCallbacks();
             self.steam_api_dll.SteamAPI_RunCallbacks.restype = None
             self.steam_api_dll.SteamAPI_RunCallbacks.argtypes = []
 
-            # void SteamAPI_Shutdown();
             self.steam_api_dll.SteamAPI_Shutdown.restype = None
             self.steam_api_dll.SteamAPI_Shutdown.argtypes = []
+            return True
 
         except OSError as e:
             Colors.error(f"Could not load or access steam_api64.dll: {e}")
             Colors.error("Ensure the DLL is not corrupted and is accessible.")
             self.steam_api_dll = None
+            return False
         except AttributeError as e:
-            Colors.error(f"A required SteamAPI function (e.g., SteamAPI_InitSafe, SteamAPI_RunCallbacks, SteamAPI_Shutdown) was not found in steam_api64.dll: {e}")
+            Colors.error(f"A required SteamAPI function was not found in steam_api64.dll: {e}")
             Colors.error("This might indicate an incorrect, outdated, or corrupted steam_api64.dll.")
             self.steam_api_dll = None
+            return False
         except Exception as e:
             Colors.error(f"An unexpected error occurred while loading steam_api64.dll: {e}")
             self.steam_api_dll = None
+            return False
 
     def init_steam(self):
         if not self.steam_api_dll:
-            Colors.error("Steam API DLL not loaded. Cannot initialize Steam simulation.")
-            return False
+            Colors.debug("Steam API DLL is not loaded. Attempting to load...")
+            if not self._load_steam_api_dll():
+                Colors.error("Failed to load Steam API DLL. Cannot initialize Steam simulation.")
+                return False
 
         Colors.info(f"Initializing Steam for AppID: {self.app_id_str} (via direct DLL call)...")
         
-        # Create steam_appid.txt: This file tells the Steam client which game to simulate.
+        self._cleanup_appid_file()
+
         try:
-            with open(self.steam_appid_file, "w") as f:
+            with open(self.steam_appid_file_path, "w") as f:
                 f.write(self.app_id_str)
-            Colors.debug(f"Created {self.steam_appid_file} with AppID {self.app_id_str}.")
+            Colors.debug(f"Created {self.steam_appid_file_path} with AppID {self.app_id_str}.")
         except IOError as e:
-            Colors.error(f"Could not create {self.steam_appid_file}: {e}")
+            Colors.error(f"Could not create {self.steam_appid_file_path}: {e}")
             return False
 
-        # Initialize Steamworks. This requires:
-        # 1. Steam client running.
-        # 2. steam_api64.dll accessible (handled by _load_steam_api_dll).
-        # 3. steam_appid.txt present in the current working directory.
         try:
-            if not self.steam_api_dll.SteamAPI_InitSafe(): # Changed from SteamAPI_Init
-                 Colors.error("Failed to initialize Steamworks (SteamAPI_InitSafe() returned False).") # Changed message
+            if not self.steam_api_dll.SteamAPI_InitSafe():
+                 Colors.error("Failed to initialize Steamworks (SteamAPI_InitSafe() returned False).")
                  Colors.error("Ensure Steam client is running. The game might also need to be in your library.")
                  self._cleanup_appid_file()
                  return False
@@ -122,7 +180,7 @@ class SteamSimulator:
             Colors.info(f"Steam should now show you as playing game with AppID {self.app_id_str}.")
             return True
         except Exception as e: 
-            Colors.error(f"An unexpected error occurred during SteamAPI_InitSafe: {e}") # Changed message
+            Colors.error(f"An unexpected error occurred during SteamAPI_InitSafe: {e}")
             self._cleanup_appid_file()
             return False
 
@@ -134,18 +192,20 @@ class SteamSimulator:
                 Colors.info("Steamworks shut down.")
             except Exception as e:
                 Colors.error(f"An error occurred during SteamAPI_Shutdown: {e}")
+            
+            self.steam_api_dll = None
+        
         self._cleanup_appid_file()
 
     def _cleanup_appid_file(self):
-        if os.path.exists(self.steam_appid_file):
+        if os.path.exists(self.steam_appid_file_path):
             try:
-                os.remove(self.steam_appid_file)
-                Colors.debug(f"Removed {self.steam_appid_file}.")
+                os.remove(self.steam_appid_file_path)
+                Colors.debug(f"Removed {self.steam_appid_file_path}.")
             except OSError as e:
-                Colors.warning(f"Could not remove {self.steam_appid_file}: {e}")
+                Colors.warning(f"Could not remove {self.steam_appid_file_path}: {e}")
     
     def run_callbacks(self):
-        """Call this periodically to keep Steamworks connection alive."""
         if self.steam_api_dll:
             try:
                 self.steam_api_dll.SteamAPI_RunCallbacks()
@@ -153,65 +213,44 @@ class SteamSimulator:
                 Colors.error(f"An error occurred during SteamAPI_RunCallbacks: {e}")
 
 # --- Steam Inventory Functions ---
-def resolve_vanity_to_steamid64(vanity_name, app_id_for_test=None):
-    """
-    Resolves a vanity URL to SteamID64.
-    Currently hardcoded for 'queendom', provides guidance for others.
-    """
-    if vanity_name.lower() == "queendom":
-        # Pre-resolved SteamID64 for "queendom"
-        return "76561198029858508" # Updated SteamID
-    
-    # Check if the provided name is already a SteamID64
-    if len(vanity_name) == 17 and vanity_name.startswith("7656") and vanity_name.isdigit():
-        Colors.info(f"'{vanity_name}' appears to be a SteamID64. Using it directly.")
-        return vanity_name
+def get_game_name(app_id):
+    app_id_str = str(app_id)
+    if app_id_str in GAME_NAME_CACHE:
+        return GAME_NAME_CACHE[app_id_str]
 
-    Colors.info(f"Automatic vanity URL resolution for '{vanity_name}' is not implemented.")
-    Colors.info("      Please use your 64-bit SteamID (a 17-digit number starting with 7656).")
-    Colors.info("      You can find it on sites like 'steamid.io' or from your Steam profile URL.")
-    
-    # Optional: Test if the vanity name works as a SteamID for inventory (simple heuristic)
-    if app_id_for_test:
-        test_url = f"https://steamcommunity.com/inventory/{vanity_name}/{app_id_for_test}/2?l=english&count=1"
-        headers = {  # Define headers for this test request as well
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        try:
-            Colors.debug(f"Testing if '{vanity_name}' can be used as a SteamID for inventory access...")
-            response = requests.get(test_url, timeout=10, headers=headers) # Added headers
-            if response.status_code == 200:
-                # Check if response.json() is successful and if Steam's own success flag is true
-                try:
-                    data = response.json()
-                    if data.get("success", True) is not False: # Steam API often returns success:true or no success field on actual success
-                        Colors.info(f"Inventory accessible with '{vanity_name}'. Assuming it's a valid SteamID64 or resolvable vanity name.")
-                        return vanity_name
-                    else:
-                        # Steam API returned success:false or an error message
-                        error_msg = data.get("Error", data.get("error", "Unknown error from Steam API"))
-                        Colors.warning(f"Steam API indicated failure for '{vanity_name}': {error_msg}")
-                except ValueError: # JSONDecodeError
-                    Colors.warning(f"Could not decode JSON response when testing vanity name '{vanity_name}'. Might not be a valid ID.")
+    url = f"https://store.steampowered.com/api/appdetails?appids={app_id_str}"
+    Colors.debug(f"Fetching game name for AppID {app_id_str} from {url}")
+    name_to_return = app_id_str  # Default to AppID string if fetching fails
+
+    try:
+        response = requests.get(url, timeout=10) # 10-second timeout for this API call
+        response.raise_for_status() # Raises HTTPError for bad responses (4XX or 5XX)
+        data = response.json()
+
+        if data and app_id_str in data and data[app_id_str].get("success"):
+            game_info = data[app_id_str].get("data")
+            if game_info and "name" in game_info:
+                name_to_return = game_info["name"]
+                Colors.debug(f"Fetched game name for AppID {app_id_str}: {name_to_return}")
             else:
-                Colors.warning(f"HTTP {response.status_code} when testing inventory access for '{vanity_name}'.")
-        except requests.exceptions.RequestException as e:
-            Colors.warning(f"Network error testing inventory access for '{vanity_name}': {e}")
-        except Exception as e: # Catch any other unexpected error during the test
-            Colors.warning(f"Unexpected error testing inventory access for '{vanity_name}': {e}")
-    
-    Colors.warning(f"Could not resolve or directly validate '{vanity_name}' as a SteamID64 for inventory access. Inventory checking might fail.")
-    return vanity_name # Fallback to using it directly, might fail later
+                Colors.warning(f"Could not find name in successful API response for AppID {app_id_str}.")
+        else:
+            api_error_detail = data.get(app_id_str, 'Not found in response') if data else 'No data returned'
+            Colors.warning(f"API request for game name for AppID {app_id_str} not successful or data malformed. Detail: {api_error_detail}")
 
-STEAM_COMMUNITY_APPID = "753" # AppID for Steam Community items (cards, emoticons, etc.)
-TRADING_CARD_CONTEXT_ID = "6" # Context ID for Trading Cards, Badges, etc.
+    except requests.exceptions.Timeout:
+        Colors.warning(f"Timeout while fetching game name for AppID {app_id_str}.")
+    except requests.exceptions.HTTPError as e:
+        Colors.warning(f"HTTP error fetching game name for AppID {app_id_str}: {e}")
+    except requests.exceptions.RequestException as e:
+        Colors.warning(f"Network error fetching game name for AppID {app_id_str}: {e}")
+    except ValueError: # Includes JSONDecodeError
+        Colors.warning(f"Could not decode JSON for game name for AppID {app_id_str}.")
+    
+    GAME_NAME_CACHE[app_id_str] = name_to_return
+    return name_to_return
 
 def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
-    """
-    Fetches the count of trading cards for a specific game from a user's public inventory.
-    Cards are typically under Steam AppID 753 and Context ID 6, so we query that and then filter.
-    Returns card count, or -1 on error.
-    """
     inventory_url = f"https://steamcommunity.com/inventory/{steam_id_64}/{STEAM_COMMUNITY_APPID}/{TRADING_CARD_CONTEXT_ID}?l=english&count=5000"
     Colors.debug(f"Fetching inventory from: {inventory_url} (AppID: {STEAM_COMMUNITY_APPID}, ContextID: {TRADING_CARD_CONTEXT_ID}, filtering for game {game_app_id_to_filter_for})")
     
@@ -221,18 +260,17 @@ def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
 
     try:
         response = requests.get(inventory_url, timeout=20, headers=headers)
-        response.raise_for_status()  # Raises HTTPError for bad responses (4XX or 5XX)
+        response.raise_for_status()
         data = response.json()
 
-        if data is None or not isinstance(data, dict): # Check if data is None or not a dictionary
+        if data is None or not isinstance(data, dict):
             Colors.error("Invalid JSON response or empty data from inventory.")
             if response:
                 Colors.debug(f"Response text (first 200 chars): {response.text[:200]}...")
             return -1
 
-        if data.get("success") is False: # Check for Steam's own error reporting
+        if data.get("success") is False:
             error_message = data.get("Error", data.get("error", "Unknown error"))
-            # Add specific check for k_EResultNoMatch (42) which can occur with valid 753 requests if empty for context
             if "k_EResultNoMatch" in error_message or "42" in error_message:
                 Colors.info(f"Steam API Info: No matching items found (k_EResultNoMatch for AppID {STEAM_COMMUNITY_APPID}, ContextID {TRADING_CARD_CONTEXT_ID}). This can mean an empty inventory for this context. Assuming 0 cards for game {game_app_id_to_filter_for}.")
                 return 0
@@ -249,17 +287,12 @@ def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
         description_map = {desc["classid"]: desc for desc in data.get("descriptions", [])}
             
         for asset in data.get("assets", []):
-            # asset["appid"] will be STEAM_COMMUNITY_APPID (e.g., 753)
-            # We need to check the description for the original game's appid
             desc = description_map.get(asset["classid"])
             if desc:
-                # Check 1: market_fee_app (most reliable for items that can be on market)
                 is_for_correct_game = False
                 if str(desc.get("market_fee_app")) == str(game_app_id_to_filter_for):
                     is_for_correct_game = True
                 
-                # Check 2: Tags (fallback or additional check)
-                # Sometimes the game is in tags like: {'category': 'Game', 'internal_name': 'appid_440', ...}
                 if not is_for_correct_game and desc.get("tags"):
                     for tag in desc["tags"]:
                         if tag.get("category") == "Game" and tag.get("internal_name") == f"appid_{game_app_id_to_filter_for}":
@@ -267,7 +300,7 @@ def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
                             break
                 
                 if not is_for_correct_game:
-                    continue # Not for the game we are idling
+                    continue
 
                 is_card = False
                 if desc.get("tags"):
@@ -277,7 +310,7 @@ def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
                             tag.get("localized_tag_name") == "Trading Card"):
                             is_card = True
                             break
-                if is_card: # Already confirmed it's for the correct game
+                if is_card:
                     card_count += int(asset.get("amount", 1))
         
         Colors.debug(f"Found {card_count} card(s) for Game AppID {game_app_id_to_filter_for} within Steam Community Inventory.")
@@ -288,117 +321,230 @@ def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
         return -1
     except requests.exceptions.HTTPError as e:
         Colors.error(f"HTTP error fetching inventory: {e}")
-        if e.response is not None: # Ensure response object exists
-            if e.response.status_code == 403: # Forbidden, often private inventory
+        if e.response is not None:
+            if e.response.status_code == 403:
                  Colors.warning("Hint: Inventory might be private or inaccessible.")
-            elif e.response.status_code == 429: # Too many requests
+            elif e.response.status_code == 429:
                  Colors.warning("Hint: Rate limited by Steam (HTTP 429). Try again later or increase monitoring interval.")
             Colors.debug(f"Response text (first 200 chars): {e.response.text[:200]}...")
         return -1
     except requests.exceptions.RequestException as e:
         Colors.error(f"General network error fetching inventory: {e}")
         return -1
-    except ValueError:  # Includes JSONDecodeError
+    except ValueError:
         Colors.error("Could not decode inventory JSON. Is the inventory public and format valid?")
         if 'response' in locals() and response:
              Colors.debug(f"Response text (first 200 chars): {response.text[:200]}...")
         return -1
 
+# --- Helper Function for Card Target Parsing ---
+def parse_card_target(target_str: str):
+    if not target_str or len(target_str) < 2:
+        return None, None, "Target string is too short (e.g., 't3', 'r1')."
+
+    mode = target_str[0].lower()
+    if mode not in ['t', 'r']:
+        return None, None, f"Invalid mode '{target_str[0]}'. Must be 't' (total) or 'r' (remaining)."
+
+    try:
+        value = int(target_str[1:])
+        if value <= 0:
+            return None, None, f"Number of cards '{target_str[1:]}' must be a positive integer."
+        return mode, value, None
+    except ValueError:
+        return None, None, f"Invalid number of cards '{target_str[1:]}'. Must be an integer."
+
 # --- Main Application Logic ---
-def main():
-    print("--- Yet Another Steam Idler (YASI) ---")
-    Colors.info("This script simulates playing a Steam game to receive card drops.")
-    Colors.info("Prerequisites: Python3, 'requests' library, running Steam client,")
-    Colors.info("and 'steam_api64.dll' copied next to this script from your Steamworks SDK.")
-    print("-" * 30)
-
-    parser = argparse.ArgumentParser(description="Yet Another Steam Idler (YASI)")
-    parser.add_argument("-a", "--app", type=int, required=True, help="The AppID of the game to idle.")
-    parser.add_argument("-c", "--cards", type=int, required=True, help="The target total number of trading cards to have for this game.") # Updated help
-    parser.add_argument("-i", "--interval", type=int, default=DEFAULT_MONITORING_INTERVAL_SECONDS, 
-                        help=f"The interval in seconds to check for new card drops (default: {DEFAULT_MONITORING_INTERVAL_SECONDS} seconds).")
-
-    args = parser.parse_args()
-
-    app_id_to_idle = args.app
-    target_total_cards = args.cards # Renamed variable
-    monitoring_interval = args.interval
-
-    if target_total_cards <= 0: # Target total should still be positive
-        Colors.error("Target total number of cards must be a positive integer.")
-        sys.exit(1)
-    
-    if monitoring_interval <= 0:
-        Colors.error("Monitoring interval must be a positive integer.")
-        sys.exit(1)
-
-    Colors.info(f"Target Game AppID: {app_id_to_idle}")
-    Colors.info(f"Steam User for Inventory: {USER_STEAM_VANITY_NAME}")
-    # Updated log message to reflect target total
-    Colors.info(f"Targeting a total of {target_total_cards} card(s) for this game.")
+def process_single_game(app_id_to_idle, target_mode, target_value, monitoring_interval, steam_id_64):
+    Colors.info(f"--- Processing Game AppID: {app_id_to_idle} ---")
+    if target_mode == 't':
+        Colors.info(f"Mode: Total. Aiming for {target_value} card(s) for this game.")
+    elif target_mode == 'r':
+        Colors.info(f"Mode: Remaining. Aiming for {target_value} additional card(s) for this game.")
     Colors.info(f"Inventory check interval: {monitoring_interval} seconds.")
-
-    steam_id_64 = resolve_vanity_to_steamid64(USER_STEAM_VANITY_NAME, app_id_to_idle)
-    if not steam_id_64: 
-        Colors.error("Critical Error: Could not determine SteamID64. Exiting.")
-        sys.exit(1)
-    Colors.info(f"Using SteamID64: {steam_id_64} for inventory checks.")
-
+    
     steam_simulator = SteamSimulator(app_id_to_idle)
     if not steam_simulator.init_steam():
-        Colors.error("Failed to initialize Steam simulation. Please check errors above. Exiting.")
-        sys.exit(1)
+        Colors.error(f"Failed to initialize Steam simulation for AppID {app_id_to_idle}. Skipping this game.")
+        return False
 
-    Colors.info("Fetching initial card count...")
+    Colors.info(f"Fetching initial card count for AppID {app_id_to_idle} (SteamID64: {steam_id_64})...")
     initial_cards = get_steam_inventory_card_count(steam_id_64, app_id_to_idle)
+    
     if initial_cards == -1:
-        Colors.error("Could not get initial card count. Ensure inventory is public and accessible.")
+        Colors.error(f"Could not get initial card count for AppID {app_id_to_idle}. Ensure inventory is public and accessible. Skipping this game.")
         steam_simulator.shutdown_steam()
-        sys.exit(1)
+        return False
     
     Colors.info(f"Initial card count for AppID {app_id_to_idle}: {initial_cards}.")
 
-    if initial_cards >= target_total_cards:
-        Colors.info(f"You already have {initial_cards} card(s), which meets or exceeds the target of {target_total_cards}. Nothing to do.")
-        steam_simulator.shutdown_steam()
-        sys.exit(0)
+    actual_target_total_cards = 0
+    if target_mode == 't':
+        actual_target_total_cards = target_value
+    elif target_mode == 'r':
+        actual_target_total_cards = initial_cards + target_value
+        Colors.info(f"Current cards: {initial_cards}. Aiming for {target_value} more, so targeting a new total of {actual_target_total_cards} card(s).")
 
-    Colors.info(f"Monitoring until a total of {target_total_cards} card(s) are in inventory... Press Ctrl+C to stop early.")
+    if target_mode == 't':
+        if initial_cards >= actual_target_total_cards:
+            Colors.info(f"Already have {initial_cards} card(s), which meets or exceeds the target total of {actual_target_total_cards}. Skipping AppID {app_id_to_idle}.")
+            steam_simulator.shutdown_steam()
+            return True
+
+    Colors.info(f"Monitoring AppID {app_id_to_idle} until inventory total reaches {actual_target_total_cards} card(s)... Press Ctrl+C to stop early for this game.")
 
     current_total_cards_in_inventory = initial_cards
     try:
-        while current_total_cards_in_inventory < target_total_cards:
-            steam_simulator.run_callbacks() # Keep Steam connection alive
+        while current_total_cards_in_inventory < actual_target_total_cards:
+            steam_simulator.run_callbacks()
 
-            Colors.debug(f"Waiting for {monitoring_interval} seconds before next inventory check...")
+            Colors.debug(f"Waiting for {monitoring_interval} seconds before next inventory check for AppID {app_id_to_idle}...")
             time.sleep(monitoring_interval)
 
             fetched_cards = get_steam_inventory_card_count(steam_id_64, app_id_to_idle)
             if fetched_cards == -1:
-                Colors.warning("Failed to check inventory on this cycle. Will retry.")
-                continue # Skip this cycle
+                Colors.warning(f"Failed to check inventory for AppID {app_id_to_idle} on this cycle. Will retry.")
+                continue
 
             if fetched_cards > current_total_cards_in_inventory:
-                Colors.info(f"Card drop(s) detected! Inventory now has {fetched_cards} card(s) (was {current_total_cards_in_inventory}).")
+                Colors.info(f"[AppID {app_id_to_idle}] Card drop(s) detected! Inventory now has {fetched_cards} card(s) (was {current_total_cards_in_inventory}).")
             elif fetched_cards < current_total_cards_in_inventory:
-                Colors.warning(f"Card count decreased from {current_total_cards_in_inventory} to {fetched_cards}.")
-            # No special message if count is unchanged, will be covered by the status update below
+                Colors.warning(f"[AppID {app_id_to_idle}] Card count decreased from {current_total_cards_in_inventory} to {fetched_cards}.")
+            
+            current_total_cards_in_inventory = fetched_cards
 
-            current_total_cards_in_inventory = fetched_cards # Update our tracked count
-
-            if current_total_cards_in_inventory >= target_total_cards:
-                Colors.info(f"Target of {target_total_cards} card(s) reached! Current total: {current_total_cards_in_inventory}.")
+            if current_total_cards_in_inventory >= actual_target_total_cards:
+                Colors.info(f"[AppID {app_id_to_idle}] Target total of {actual_target_total_cards} card(s) reached! Current total: {current_total_cards_in_inventory}.")
                 break
             else:
-                remaining_needed = target_total_cards - current_total_cards_in_inventory
-                Colors.info(f"Current: {current_total_cards_in_inventory}/{target_total_cards}. Need {remaining_needed} more card(s).")
+                remaining_needed_for_target_total = actual_target_total_cards - current_total_cards_in_inventory
+                Colors.info(f"[AppID {app_id_to_idle}] Current: {current_total_cards_in_inventory}/{actual_target_total_cards}. Need {remaining_needed_for_target_total} more card(s) to reach target total.")
             
     except KeyboardInterrupt:
-        Colors.info("\nMonitoring interrupted by user (Ctrl+C).")
+        Colors.info(f"\nMonitoring for AppID {app_id_to_idle} interrupted by user (Ctrl+C).")
     finally:
-        Colors.info("Stopping game simulation...")
+        Colors.info(f"Stopping game simulation for AppID {app_id_to_idle}...")
         steam_simulator.shutdown_steam()
-        Colors.info("YASI finished.")
+        Colors.info(f"--- Finished processing Game AppID: {app_id_to_idle} ---")
+    return True
+
+def determine_target_card_count(initial_card_count, target_spec):
+    mode, value, error_detail = parse_card_target(target_spec)
+    if error_detail:
+        Colors.error(f"Invalid target specification '{target_spec}': {error_detail}")
+        return None, None
+
+    if mode == 't':
+        return value, False
+    elif mode == 'r':
+        return initial_card_count + value, True
+
+def parse_arguments():
+    # load_configuration() will have been called prior to this in main(),
+    # so DEFAULT_MONITORING_INTERVAL_SECONDS is populated.
+    parser = argparse.ArgumentParser(description="Yet Another Steam Idler (YASI) - Single Game Mode", formatter_class=argparse.RawTextHelpFormatter)
+    
+    parser.add_argument("-a", "--app-id", type=int, required=True, help="The AppID of the game to idle.")
+
+    parser.add_argument("-c", "--card-target", type=str, required=True,
+                        help="The target card count, prefixed with mode: \n  'tX' for a total of X cards (e.g., t5).\n  'rX' for X more (remaining) cards (e.g., r2).")
+
+    parser.add_argument("-i", "--interval", type=int, 
+                        default=DEFAULT_MONITORING_INTERVAL_SECONDS, # Use loaded config value as default
+                        help=f"The interval in seconds to check for new card drops (default: {DEFAULT_MONITORING_INTERVAL_SECONDS}s from config.json).")
+
+    args = parser.parse_args()
+
+    # No need to check if DEFAULT_MONITORING_INTERVAL_SECONDS is None here,
+    # load_configuration() would have exited if it failed to load.
+    # args.interval now directly holds the effective monitoring interval.
+
+    if args.app_id <= 0:
+        parser.error("AppID specified with -a/--app-id must be a positive integer.")
+    
+    if args.interval <= 0:
+        parser.error("Monitoring interval specified with -i/--interval must be a positive integer.")
+
+    return args
+
+def main():
+    load_configuration() # Load config first
+    args = parse_arguments() # Then parse arguments, using loaded config for defaults
+
+    app_id_to_idle = args.app_id
+    target_spec = args.card_target
+    monitoring_interval = args.interval # This is the effective interval to use
+
+    game_name = get_game_name(app_id_to_idle) # Fetch game name
+
+    Colors.info(f"--- YASI: Yet Another Steam Idler ---")
+    Colors.info(f"Targeting AppID: {app_id_to_idle} ({game_name}) with card target: '{target_spec}'")
+    Colors.info(f"Monitoring interval: {monitoring_interval} seconds.")
+
+    # USER_STEAM_ID_64 is now used directly. Checks are done in load_configuration().
+
+    # --- Initial Card Count Check (Before Steam Init) ---
+    Colors.info(f"Performing initial card count check for AppID {app_id_to_idle} ({game_name})...")
+    initial_card_count = get_steam_inventory_card_count(USER_STEAM_ID_64, app_id_to_idle)
+
+    if initial_card_count == -1:
+        Colors.error(f"Failed to get initial card count for AppID {app_id_to_idle} ({game_name}). Cannot proceed reliably.")
+        sys.exit(1) 
+    
+    Colors.info(f"Initial card count for AppID {app_id_to_idle} ({game_name}): {initial_card_count}")
+
+    target_card_count, check_for_any_new_card = determine_target_card_count(initial_card_count, target_spec)
+    if target_card_count is None:
+        sys.exit(1)
+
+    if not check_for_any_new_card and initial_card_count >= target_card_count:
+        Colors.info(f"Target of {target_card_count} card(s) for AppID {app_id_to_idle} ({game_name}) already met or exceeded (current: {initial_card_count}). No idling needed.")
+        sys.exit(0)
+
+    Colors.info(f"Proceeding to initialize Steam simulation for AppID {app_id_to_idle} ({game_name}).")
+    # --- End of Initial Card Count Check ---
+
+    simulator = SteamSimulator(app_id_to_idle)
+    if not simulator.init_steam():
+        Colors.error(f"Failed to initialize Steam simulation for AppID {app_id_to_idle} ({game_name}). Exiting.")
+        sys.exit(1)
+
+    try:
+        current_card_count = initial_card_count
+        Colors.info(f"Monitoring for card drops for AppID {app_id_to_idle} ({game_name}). Target: {target_card_count} card(s). Checking every {monitoring_interval}s.")
+        last_check_time = time.time()
+
+        while True:
+            simulator.run_callbacks()
+
+            if current_card_count >= target_card_count:
+                Colors.info(f"Target of {target_card_count} cards met for AppID {app_id_to_idle} ({game_name}). Current: {current_card_count}.")
+                break
+
+            current_time = time.time()
+            if current_time - last_check_time >= monitoring_interval:
+                Colors.info(f"Checking inventory for AppID {app_id_to_idle} ({game_name})...")
+                fresh_inventory_count = get_steam_inventory_card_count(USER_STEAM_ID_64, app_id_to_idle)
+                last_check_time = current_time
+
+                if fresh_inventory_count == -1:
+                    Colors.warning(f"Failed to fetch inventory count during monitoring for AppID {app_id_to_idle} ({game_name}). Will retry.")
+                elif fresh_inventory_count > current_card_count:
+                    Colors.info(f"New card drop detected for AppID {app_id_to_idle} ({game_name})! Count increased from {current_card_count} to {fresh_inventory_count}.")
+                    current_card_count = fresh_inventory_count
+                elif fresh_inventory_count < current_card_count:
+                    Colors.warning(f"Card count for AppID {app_id_to_idle} ({game_name}) decreased from {current_card_count} to {fresh_inventory_count}. This is unusual. Continuing.")
+                    current_card_count = fresh_inventory_count
+                else:
+                    Colors.info(f"No new cards detected for AppID {app_id_to_idle} ({game_name}). Current count: {current_card_count}.")
+            
+            time.sleep(1)
+    except KeyboardInterrupt:
+        Colors.info(f"\nMonitoring for AppID {app_id_to_idle} ({game_name}) interrupted by user (Ctrl+C).")
+    finally:
+        Colors.info(f"Stopping game simulation for AppID {app_id_to_idle} ({game_name})...")
+        simulator.shutdown_steam()
+        Colors.info(f"--- Finished processing Game AppID: {app_id_to_idle} ({game_name}) ---")
 
 if __name__ == "__main__":
     main()
