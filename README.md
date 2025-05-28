@@ -7,10 +7,12 @@ YASI is a Python-based tool for simulating Steam game idling to trigger trading 
 *   Simulates running a game on Steam using the official Steamworks SDK.
 *   **Does NOT require you to provide your Steam login credentials.**
 *   Monitors your public Steam inventory for new trading cards for a specified game. **Your Steam inventory must be set to public for this to work.**
+*   **Inventory checking toggle**: Can be disabled to use timed idling mode instead of inventory monitoring.
 *   Stops idling for a game once a target number of cards is reached or a specified number of new cards have dropped.
 *   Supports batch processing of multiple games from a list.
 *   Fetches and displays game names in logs for better readability.
 *   Configurable monitoring interval and pause between games.
+*   Maximum idle time limits to prevent excessive idling per game.
 
 ## Prerequisites
 
@@ -36,6 +38,8 @@ Configuration is split into three main JSON files and one text file for game lis
     *   `trading_card_context_id`: The context ID for trading cards in the inventory (usually `6`).
     *   `default_monitoring_interval_seconds`: How often (in seconds) to check your inventory for new cards (e.g., `300` for 5 minutes).
     *   `pause_between_games_seconds`: How long (in seconds) `yasim.ps1` should pause before starting the next game in a batch (e.g., `10`).
+    *   `max_idle_minutes_per_card`: Maximum time to idle per expected card drop (e.g., `30` minutes).
+    *   `enable_inventory_checking`: Set to `true` to monitor your Steam inventory for card drops, or `false` to use timed idling mode instead.
 
     Example `config.json`:
     ```json
@@ -43,7 +47,9 @@ Configuration is split into three main JSON files and one text file for game lis
       "steam_community_appid": 753,
       "trading_card_context_id": 6,
       "default_monitoring_interval_seconds": 300,
-      "pause_between_games_seconds": 10
+      "pause_between_games_seconds": 10,
+      "max_idle_minutes_per_card": 35,
+      "enable_inventory_checking": true
     }
     ```
 
@@ -80,7 +86,22 @@ Configuration is split into three main JSON files and one text file for game lis
 
 ## Usage
 
-There are two main ways to use YASI:
+### Inventory Checking Modes
+
+YASI supports two operational modes controlled by the `enable_inventory_checking` setting in `config.json`:
+
+*   **Inventory Monitoring Mode** (`enable_inventory_checking: true`):
+    *   **Default mode**. Monitors your public Steam inventory for card drops.
+    *   Supports both 'total' (`tX`) and 'remaining' (`rX`) target formats.
+    *   Requires your Steam inventory to be public.
+    *   Provides real-time feedback on card drops.
+
+*   **Timed Idling Mode** (`enable_inventory_checking: false`):
+    *   Uses time-based estimation instead of inventory monitoring.
+    *   **Only supports 'remaining' (`rX`) target format** - 'total' format will be rejected.
+    *   Does not require public inventory access.
+    *   Estimates card drops based on idle time (using `max_idle_minutes_per_card` setting).
+    *   Useful when inventory privacy is preferred or inventory monitoring is unreliable.
 
 ### 1. Single Game Idling (`yasi.py`)
 
@@ -137,17 +158,17 @@ Game names are fetched and included in logs alongside AppIDs for easier identifi
 ## How It Works
 
 1.  **Configuration Loading**: `yasi.py` loads settings from `config.json` and `user.json`.
-2.  **Initial Card Check**: Before starting Steam simulation, `yasi.py` checks your current card count for the target game. If the target is already met, it exits for that game.
+2.  **Initial Card Check**:
+    *   **Inventory Monitoring Mode**: Before starting Steam simulation, `yasi.py` checks your current card count for the target game. If the target is already met, it exits for that game.
+    *   **Timed Idling Mode**: Skips inventory checking and proceeds directly to Steam simulation.
 3.  **Steam Simulation**:
     *   `yasi.py` creates a `steam_appid.txt` file with the game's AppID.
     *   It loads `steam_api64.dll` using `ctypes`.
     *   It calls `SteamAPI_InitSafe()` to initialize the Steamworks API, making Steam believe the game is running.
 4.  **Monitoring Loop**:
     *   `yasi.py` periodically calls `SteamAPI_RunCallbacks()` to keep the Steam connection alive.
-    *   At intervals defined by `monitoring_interval` (or `default_monitoring_interval_seconds`), it fetches your public Steam inventory using the Steam Community web API.
-    *   It counts the trading cards for the specific game being idled.
-    *   If new cards are detected, it updates its count.
-    *   Once the target card count is met, it proceeds to shutdown.
+    *   **Inventory Monitoring Mode**: At intervals defined by `monitoring_interval`, it fetches your public Steam inventory using the Steam Community web API, counts trading cards, and stops when the target is met.
+    *   **Timed Idling Mode**: Estimates card drops based on elapsed time using the `max_idle_minutes_per_card` setting, stopping when the target number of estimated drops is reached or maximum idle time is exceeded.
 5.  **Shutdown**:
     *   `yasi.py` calls `SteamAPI_Shutdown()`.
     *   It cleans up the `steam_appid.txt` file.
@@ -158,4 +179,4 @@ Game names are fetched and included in logs alongside AppIDs for easier identifi
 
 ## Disclaimer
 
-This tool interacts with the Steam client and its APIs. Use it at your own risk. Ensure your inventory is set to public for the card counting to work. The effectiveness of idling for card drops can vary and is subject to Steam's policies and drop system.
+This tool interacts with the Steam client and its APIs. Use it at your own risk. When using inventory monitoring mode, ensure your inventory is set to public for the card counting to work. When using timed idling mode, inventory privacy settings do not matter. The effectiveness of idling for card drops can vary and is subject to Steam's policies and drop system.
