@@ -41,12 +41,13 @@ USER_STEAM_ID_64 = None
 STEAM_COMMUNITY_APPID = None
 TRADING_CARD_CONTEXT_ID = None
 DEFAULT_MONITORING_INTERVAL_SECONDS = None
+MAX_IDLE_MINUTES_PER_CARD = None # New global variable
 
 GAME_NAME_CACHE = {} # Cache for game names
 
 # --- Config Loading Function ---
 def load_configuration():
-    global USER_STEAM_ID_64, STEAM_COMMUNITY_APPID, TRADING_CARD_CONTEXT_ID, DEFAULT_MONITORING_INTERVAL_SECONDS
+    global USER_STEAM_ID_64, STEAM_COMMUNITY_APPID, TRADING_CARD_CONTEXT_ID, DEFAULT_MONITORING_INTERVAL_SECONDS, MAX_IDLE_MINUTES_PER_CARD
 
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     config_json_path = os.path.join(script_dir, "config.json")
@@ -58,6 +59,7 @@ def load_configuration():
         STEAM_COMMUNITY_APPID = app_config['steam_community_appid']
         TRADING_CARD_CONTEXT_ID = app_config['trading_card_context_id']
         DEFAULT_MONITORING_INTERVAL_SECONDS = int(app_config['default_monitoring_interval_seconds'])
+        MAX_IDLE_MINUTES_PER_CARD = int(app_config.get('max_idle_minutes_per_card', 30)) # Load new config
         Colors.debug(f"Loaded application config from {config_json_path}")
     except FileNotFoundError:
         Colors.error(f"CRITICAL: Application configuration file 'config.json' not found in {script_dir}.")
@@ -478,30 +480,71 @@ def main():
     game_name = get_game_name(app_id_to_idle) # Fetch game name
 
     Colors.info(f"--- YASI: Yet Another Steam Idler ---")
-    Colors.info(f"Targeting AppID: {app_id_to_idle} ({game_name}) with card target: '{target_spec}'")
+    Colors.info(
+        f"Targeting AppID: {app_id_to_idle} ({game_name}) "
+        f"with card target: '{target_spec}'"
+    )
     Colors.info(f"Monitoring interval: {monitoring_interval} seconds.")
 
     # USER_STEAM_ID_64 is now used directly. Checks are done in load_configuration().
 
     # --- Initial Card Count Check (Before Steam Init) ---
-    Colors.info(f"Performing initial card count check for AppID {app_id_to_idle} ({game_name})...")
-    initial_card_count = get_steam_inventory_card_count(USER_STEAM_ID_64, app_id_to_idle)
+    Colors.info(
+        f"Performing initial card count check for AppID {app_id_to_idle} "
+        f"({game_name})..."
+    )
+    initial_card_count = get_steam_inventory_card_count(
+        USER_STEAM_ID_64, app_id_to_idle
+    )
 
     if initial_card_count == -1:
-        Colors.error(f"Failed to get initial card count for AppID {app_id_to_idle} ({game_name}). Cannot proceed reliably.")
+        Colors.error(
+            f"Failed to get initial card count for AppID {app_id_to_idle} "
+            f"({game_name}). Cannot proceed reliably."
+        )
         sys.exit(1)
 
-    Colors.info(f"Initial card count for AppID {app_id_to_idle} ({game_name}): {initial_card_count}")
+    Colors.info(
+        f"Initial card count for AppID {app_id_to_idle} ({game_name}): "
+        f"{initial_card_count}"
+    )
 
-    target_card_count, check_for_any_new_card = determine_target_card_count(initial_card_count, target_spec)
+    target_card_count, check_for_any_new_card = determine_target_card_count(
+        initial_card_count, target_spec
+    )
     if target_card_count is None:
-        sys.exit(1)
+        sys.exit(1) # Error message already printed by determine_target_card_count
 
     if not check_for_any_new_card and initial_card_count >= target_card_count:
-        Colors.info(f"Target of {target_card_count} card(s) for AppID {app_id_to_idle} ({game_name}) already met or exceeded (current: {initial_card_count}). No idling needed.")
+        Colors.info(
+            f"Target of {target_card_count} card(s) for AppID "
+            f"{app_id_to_idle} ({game_name}) already met or exceeded "
+            f"(current: {initial_card_count}). No idling needed."
+        )
         sys.exit(0)
 
-    Colors.info(f"Proceeding to initialize Steam simulation for AppID {app_id_to_idle} ({game_name}).")
+    Colors.info(
+        f"Proceeding to initialize Steam simulation for "
+        f"AppID {app_id_to_idle} ({game_name})."
+    )
+
+    # Calculate max idle time for this session
+    max_idle_time_seconds = 0
+    num_cards_to_wait_for_this_session = target_card_count - initial_card_count
+
+    if num_cards_to_wait_for_this_session > 0:
+        max_idle_minutes = (
+            num_cards_to_wait_for_this_session * MAX_IDLE_MINUTES_PER_CARD
+        )
+        max_idle_time_seconds = max_idle_minutes * 60
+        Colors.info(
+            f"Max idle time for this session set to: "
+            f"{max_idle_minutes:.0f} minutes."
+        )
+        Colors.debug(
+            f"  (Calc: {num_cards_to_wait_for_this_session} card(s) "
+            f"to drop * {MAX_IDLE_MINUTES_PER_CARD} min/card)"
+        )
     # --- End of Initial Card Count Check ---
 
     simulator = SteamSimulator(app_id_to_idle)
@@ -511,14 +554,33 @@ def main():
 
     try:
         current_card_count = initial_card_count
-        Colors.info(f"Monitoring for card drops for AppID {app_id_to_idle} ({game_name}). Target: {target_card_count} card(s). Checking every {monitoring_interval}s.")
+        Colors.info(
+            f"Monitoring for card drops for AppID {app_id_to_idle} "
+            f"({game_name}). Target: {target_card_count} card(s). "
+            f"Checking every {monitoring_interval}s."
+        )
         last_check_time = time.time()
+        start_idle_time = time.time() # Record when idling starts
 
         while True:
             simulator.run_callbacks()
 
+            # Check for max idle time limit
+            if max_idle_time_seconds > 0: # Only if a limit was set
+                elapsed_idle_time = time.time() - start_idle_time
+                if elapsed_idle_time >= max_idle_time_seconds:
+                    max_minutes_reached = max_idle_time_seconds / 60
+                    Colors.warning(
+                        f"Max idle time (~{max_minutes_reached:.0f} min) "
+                        f"reached for AppID {app_id_to_idle} ({game_name})."
+                    )
+                    break # Exit the idling loop
+
             if current_card_count >= target_card_count:
-                Colors.info(f"Target of {target_card_count} cards met for AppID {app_id_to_idle} ({game_name}). Current: {current_card_count}.")
+                Colors.info(
+                    f"Target of {target_card_count} cards met for AppID "
+                    f"{app_id_to_idle} ({game_name}). Current: {current_card_count}."
+                )
                 break
 
             current_time = time.time()

@@ -2,5 +2,6 @@
   "steam_community_appid": 753,
   "trading_card_context_id": 6,
   "default_monitoring_interval_seconds": 300,
-  "pause_between_games_seconds": 3
+  "pause_between_games_seconds": 3,
+  "max_idle_minutes_per_card": 30
 }
