@@ -255,91 +255,141 @@ def get_game_name(app_id):
     return name_to_return
 
 def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
-    inventory_url = f"https://steamcommunity.com/inventory/{steam_id_64}/{STEAM_COMMUNITY_APPID}/{TRADING_CARD_CONTEXT_ID}?l=english&count=5000"
-    Colors.debug(f"Fetching inventory from: {inventory_url} (AppID: {STEAM_COMMUNITY_APPID}, ContextID: {TRADING_CARD_CONTEXT_ID}, filtering for game {game_app_id_to_filter_for})")
-
+    """
+    Fetch card count for a specific game from Steam inventory with pagination support.
+    Steam now limits inventory requests to 2500 items per page.
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
 
-    try:
-        response = requests.get(inventory_url, timeout=20, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    card_count = 0
+    start_assetid = None
+    page_num = 1
+    total_items_processed = 0
 
-        if data is None or not isinstance(data, dict):
-            Colors.error("Invalid JSON response or empty data from inventory.")
-            if response:
-                Colors.debug(f"Response text (first 200 chars): {response.text[:200]}...")
+    Colors.debug(f"Starting paginated inventory fetch for AppID {game_app_id_to_filter_for} (Steam ID: {steam_id_64})")
+
+    while True:
+        # Build URL for current page
+        base_url = f"https://steamcommunity.com/inventory/{steam_id_64}/{STEAM_COMMUNITY_APPID}/{TRADING_CARD_CONTEXT_ID}?l=english&count=2500"
+        if start_assetid:
+            inventory_url = f"{base_url}&start_assetid={start_assetid}"
+        else:
+            inventory_url = base_url
+
+        Colors.debug(f"Fetching inventory page {page_num}: {inventory_url}")
+
+        try:
+            response = requests.get(inventory_url, timeout=20, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+            if data is None or not isinstance(data, dict):
+                Colors.error(f"Invalid JSON response or empty data from inventory page {page_num}.")
+                if response:
+                    Colors.debug(f"Response text (first 200 chars): {response.text[:200]}...")
+                return -1
+
+            if data.get("success") is False:
+                error_message = data.get("Error", data.get("error", "Unknown error"))
+                if "k_EResultNoMatch" in error_message or "42" in error_message:
+                    Colors.info(f"Steam API Info: No matching items found (k_EResultNoMatch for AppID {STEAM_COMMUNITY_APPID}, ContextID {TRADING_CARD_CONTEXT_ID}). This can mean an empty inventory for this context. Assuming 0 cards for game {game_app_id_to_filter_for}.")
+                    return 0
+                Colors.error(f"Steam API Error on page {page_num}: {error_message}")
+                if "private" in error_message.lower():
+                    Colors.warning("Hint: The inventory might be private.")
+                return -1
+
+            # Process current page
+            assets = data.get("assets", [])
+            descriptions = data.get("descriptions", [])
+
+            if not assets and not descriptions:
+                if page_num == 1:
+                    Colors.info(f"No 'assets' or 'descriptions' in inventory data for AppID {STEAM_COMMUNITY_APPID}, ContextID {TRADING_CARD_CONTEXT_ID} (or inventory is private/empty). Assuming 0 cards for game {game_app_id_to_filter_for}.")
+                    return 0
+                else:
+                    # Empty page but not the first one - stop pagination
+                    break
+
+            # Build description map for this page
+            description_map = {desc["classid"]: desc for desc in descriptions}
+            page_cards = 0
+
+            for asset in assets:
+                desc = description_map.get(asset["classid"])
+                if desc:
+                    is_for_correct_game = False
+                    if str(desc.get("market_fee_app")) == str(game_app_id_to_filter_for):
+                        is_for_correct_game = True
+
+                    if not is_for_correct_game and desc.get("tags"):
+                        for tag in desc["tags"]:
+                            if tag.get("category") == "Game" and tag.get("internal_name") == f"appid_{game_app_id_to_filter_for}":
+                                is_for_correct_game = True
+                                break
+
+                    if not is_for_correct_game:
+                        continue
+
+                    is_card = False
+                    if desc.get("tags"):
+                        for tag in desc["tags"]:
+                            if (tag.get("category") == "item_class" and
+                                tag.get("internal_name") == "item_class_2" and
+                                tag.get("localized_tag_name") == "Trading Card"):
+                                is_card = True
+                                break
+                    if is_card:
+                        card_amount = int(asset.get("amount", 1))
+                        page_cards += card_amount
+                        card_count += card_amount
+
+            total_items_processed += len(assets)
+            Colors.debug(f"Page {page_num}: Found {page_cards} card(s) for game {game_app_id_to_filter_for}, processed {len(assets)} items")
+
+            # Check if there are more pages
+            more_items = data.get("more_items", 0)
+            if more_items != 1:
+                # No more pages
+                break
+
+            # Get start_assetid for next page
+            last_assetid = data.get("last_assetid")
+            if not last_assetid:
+                Colors.warning(f"No 'last_assetid' found in response but 'more_items' is 1. Stopping pagination.")
+                break
+
+            start_assetid = last_assetid
+            page_num += 1
+
+            # Add a small delay between requests to be nice to Steam's servers
+            time.sleep(0.5)
+
+        except requests.exceptions.Timeout:
+            Colors.error(f"Timeout while fetching inventory page {page_num}.")
+            return -1
+        except requests.exceptions.HTTPError as e:
+            Colors.error(f"HTTP error fetching inventory page {page_num}: {e}")
+            if e.response is not None:
+                if e.response.status_code == 403:
+                     Colors.warning("Hint: Inventory might be private or inaccessible.")
+                elif e.response.status_code == 429:
+                     Colors.warning("Hint: Rate limited by Steam (HTTP 429). Try again later or increase monitoring interval.")
+                Colors.debug(f"Response text (first 200 chars): {e.response.text[:200]}...")
+            return -1
+        except requests.exceptions.RequestException as e:
+            Colors.error(f"General network error fetching inventory page {page_num}: {e}")
+            return -1
+        except ValueError:
+            Colors.error(f"Could not decode inventory JSON for page {page_num}. Is the inventory public and format valid?")
+            if 'response' in locals() and response:
+                 Colors.debug(f"Response text (first 200 chars): {response.text[:200]}...")
             return -1
 
-        if data.get("success") is False:
-            error_message = data.get("Error", data.get("error", "Unknown error"))
-            if "k_EResultNoMatch" in error_message or "42" in error_message:
-                Colors.info(f"Steam API Info: No matching items found (k_EResultNoMatch for AppID {STEAM_COMMUNITY_APPID}, ContextID {TRADING_CARD_CONTEXT_ID}). This can mean an empty inventory for this context. Assuming 0 cards for game {game_app_id_to_filter_for}.")
-                return 0
-            Colors.error(f"Steam API Error: {error_message}")
-            if "private" in error_message.lower():
-                Colors.warning("Hint: The inventory might be private.")
-            return -1
-
-        if "assets" not in data or "descriptions" not in data:
-            Colors.info(f"No 'assets' or 'descriptions' in inventory data for AppID {STEAM_COMMUNITY_APPID}, ContextID {TRADING_CARD_CONTEXT_ID} (or inventory is private/empty). Assuming 0 cards for game {game_app_id_to_filter_for}.")
-            return 0
-
-        card_count = 0
-        description_map = {desc["classid"]: desc for desc in data.get("descriptions", [])}
-
-        for asset in data.get("assets", []):
-            desc = description_map.get(asset["classid"])
-            if desc:
-                is_for_correct_game = False
-                if str(desc.get("market_fee_app")) == str(game_app_id_to_filter_for):
-                    is_for_correct_game = True
-
-                if not is_for_correct_game and desc.get("tags"):
-                    for tag in desc["tags"]:
-                        if tag.get("category") == "Game" and tag.get("internal_name") == f"appid_{game_app_id_to_filter_for}":
-                            is_for_correct_game = True
-                            break
-
-                if not is_for_correct_game:
-                    continue
-
-                is_card = False
-                if desc.get("tags"):
-                    for tag in desc["tags"]:
-                        if (tag.get("category") == "item_class" and
-                            tag.get("internal_name") == "item_class_2" and
-                            tag.get("localized_tag_name") == "Trading Card"):
-                            is_card = True
-                            break
-                if is_card:
-                    card_count += int(asset.get("amount", 1))
-
-        Colors.debug(f"Found {card_count} card(s) for Game AppID {game_app_id_to_filter_for} within Steam Community Inventory.")
-        return card_count
-
-    except requests.exceptions.Timeout:
-        Colors.error("Timeout while fetching inventory.")
-        return -1
-    except requests.exceptions.HTTPError as e:
-        Colors.error(f"HTTP error fetching inventory: {e}")
-        if e.response is not None:
-            if e.response.status_code == 403:
-                 Colors.warning("Hint: Inventory might be private or inaccessible.")
-            elif e.response.status_code == 429:
-                 Colors.warning("Hint: Rate limited by Steam (HTTP 429). Try again later or increase monitoring interval.")
-            Colors.debug(f"Response text (first 200 chars): {e.response.text[:200]}...")
-        return -1
-    except requests.exceptions.RequestException as e:
-        Colors.error(f"General network error fetching inventory: {e}")
-        return -1
-    except ValueError:
-        Colors.error("Could not decode inventory JSON. Is the inventory public and format valid?")
-        if 'response' in locals() and response:
-             Colors.debug(f"Response text (first 200 chars): {response.text[:200]}...")
-        return -1
+    Colors.debug(f"Completed paginated inventory fetch: {page_num} page(s), {total_items_processed} total items processed, {card_count} card(s) for Game AppID {game_app_id_to_filter_for}")
+    return card_count
 
 # --- Helper Function for Card Target Parsing ---
 def parse_card_target(target_str: str):

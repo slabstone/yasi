@@ -4,5 +4,5 @@
   "default_monitoring_interval_seconds": 300,
   "pause_between_games_seconds": 3,
   "max_idle_minutes_per_card": 30,
-  "enable_inventory_checking": false
+  "enable_inventory_checking": true
 }
