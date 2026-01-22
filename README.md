@@ -116,11 +116,17 @@ python yasi.py -a <AppID> -c <TargetSpec> [-i <IntervalSeconds>]
 *   `-a <AppID>` or `--app-id <AppID>`: (Required) The AppID of the game to idle.
 *   `-c <TargetSpec>` or `--card-target <TargetSpec>`: (Required) The card target specification (e.g., `t5` for a total of 5, `r2` for 2 more).
 *   `-i <IntervalSeconds>` or `--interval <IntervalSeconds>`: (Optional) Override the `default_monitoring_interval_seconds` from `config.json`.
+*   `-f` or `--fast`: (Optional) Fast check mode - runs the game for 5 seconds and exits without monitoring.
 
-**Example:**
+**Examples:**
 To idle game AppID `440` until you have a total of 3 cards, checking every 60 seconds:
 ```bash
 python yasi.py -a 440 -c t3 -i 60
+```
+
+To quickly check/trigger a game for 5 seconds (fast check mode):
+```bash
+python yasi.py -a 440 -c t1 -f
 ```
 
 ### 2. Batch Game Idling (`yasim.bat`)

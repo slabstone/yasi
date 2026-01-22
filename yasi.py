@@ -507,6 +507,9 @@ def parse_arguments():
                         default=DEFAULT_MONITORING_INTERVAL_SECONDS, # Use loaded config value as default
                         help=f"The interval in seconds to check for new card drops (default: {DEFAULT_MONITORING_INTERVAL_SECONDS}s from config.json).")
 
+    parser.add_argument("-f", "--fast", action="store_true",
+                        help="Fast check mode: run the game for 5 seconds and exit.")
+
     args = parser.parse_args()
 
     # No need to check if DEFAULT_MONITORING_INTERVAL_SECONDS is None here,
@@ -630,6 +633,19 @@ def main():
     if not simulator.init_steam():
         Colors.error(f"Failed to initialize Steam simulation for AppID {app_id_to_idle} ({game_name}). Exiting.")
         sys.exit(1)
+
+    # Fast check mode: run for 5 seconds and exit
+    if args.fast:
+        Colors.info(f"Fast check mode enabled. Running AppID {app_id_to_idle} ({game_name}) for 5 seconds...")
+        try:
+            for i in range(5):
+                simulator.run_callbacks()
+                time.sleep(1)
+            Colors.info("Fast check complete. Shutting down...")
+        finally:
+            simulator.shutdown_steam()
+            Colors.info(f"--- Finished fast check for AppID: {app_id_to_idle} ({game_name}) ---")
+        sys.exit(0)
 
     try:
         current_card_count = initial_card_count
