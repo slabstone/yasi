@@ -13,8 +13,8 @@
     .\yasi_manager.ps1 C:\path\to\your\gameslist.txt
 #>
 param (
-    [Parameter(Mandatory=$true, Position=0)]
-    [string]$FilePath
+    [Parameter(Mandatory=$false, Position=0)]
+    [string]$FilePath = "apps.txt"
 )
 
 # Get the directory where this script is located
