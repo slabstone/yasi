@@ -4,3 +4,6 @@ user.json
 steam_appid.txt
 apps.txt
 .vscode/
+badges.csv
+badges.html
+debug/

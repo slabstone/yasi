@@ -1,0 +1,120 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+
+CONFIG_FILE="${CONFIG_FILE:-$PARENT_DIR/config.json}"
+APPS_FILE="${1:-$PARENT_DIR/apps.txt}"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Config file not found: $CONFIG_FILE" >&2
+    exit 1
+fi
+
+if [ ! -f "$APPS_FILE" ]; then
+    echo "Error: Apps file not found: $APPS_FILE" >&2
+    exit 1
+fi
+
+# Extract max_idle_minutes_per_card from config.json
+MAX_IDLE_MINUTES_PER_CARD=$(grep -o '"max_idle_minutes_per_card"[[:space:]]*:[[:space:]]*[0-9]\+' "$CONFIG_FILE" | grep -o '[0-9]\+$')
+
+if [ -z "$MAX_IDLE_MINUTES_PER_CARD" ]; then
+    echo "Error: Could not read max_idle_minutes_per_card from config.json" >&2
+    exit 1
+fi
+
+echo "=== Apps Statistics ==="
+echo "Config: $CONFIG_FILE"
+echo "Apps file: $APPS_FILE"
+echo "Max idle time per card: $MAX_IDLE_MINUTES_PER_CARD minutes"
+echo ""
+
+# Process apps.txt and calculate statistics
+gawk -v max_minutes="$MAX_IDLE_MINUTES_PER_CARD" '
+BEGIN {
+    total_cards = 0;
+    total_apps = 0;
+    invalid_lines = 0;
+}
+
+# Skip empty lines and comments
+/^[[:space:]]*$/ || /^#/ {
+    next;
+}
+
+{
+    # Extract the card count from rX format at the end of the line
+    if (match($0, /r([0-9]+)[[:space:]]*$/, arr)) {
+        cards = int(arr[1]);
+        total_cards += cards;
+        total_apps++;
+    } else {
+        invalid_lines++;
+    }
+}
+
+END {
+    print "Total apps to idle: " total_apps;
+    print "Total cards to collect: " total_cards;
+
+    if (invalid_lines > 0) {
+        print "Invalid/skipped lines: " invalid_lines;
+    }
+
+    print "";
+    print "=== Time Estimates ===";
+
+    # Calculate total minutes
+    total_minutes = total_cards * max_minutes;
+
+    # Convert to different time units
+    total_hours = total_minutes / 60;
+    total_days = total_hours / 24;
+    total_weeks = total_days / 7;
+
+    # Display formatted time
+    printf "Total estimated time:\n";
+    printf "  %d minutes\n", total_minutes;
+    printf "  %.1f hours\n", total_hours;
+    printf "  %.1f days\n", total_days;
+    printf "  %.1f weeks\n", total_weeks;
+
+    print "";
+
+    # Break down into days, hours, minutes
+    days = int(total_minutes / 1440);
+    remaining_minutes = total_minutes % 1440;
+    hours = int(remaining_minutes / 60);
+    minutes = remaining_minutes % 60;
+
+    printf "Formatted: ";
+    if (days > 0) {
+        printf "%d day%s ", days, (days > 1 ? "s" : "");
+    }
+    if (hours > 0 || days > 0) {
+        printf "%d hour%s ", hours, (hours != 1 ? "s" : "");
+    }
+    printf "%d minute%s\n", minutes, (minutes != 1 ? "s" : "");
+
+    print "";
+    print "=== If idling 8 hours per day ===";
+
+    # Calculate calendar days needed if idling 8 hours per day
+    minutes_per_day = 8 * 60;  # 480 minutes
+    calendar_days = total_hours / 8;
+    calendar_weeks = calendar_days / 7;
+    calendar_months = calendar_days / 30;
+
+    printf "Time to complete:\n";
+    printf "  %.1f calendar days\n", calendar_days;
+    printf "  %.1f weeks\n", calendar_weeks;
+    printf "  %.1f months\n", calendar_months;
+
+    print "";
+    print "Note: These are maximum estimates. Actual time may vary.";
+    print "Cards can drop faster than the maximum idle time.";
+}
+' "$APPS_FILE"

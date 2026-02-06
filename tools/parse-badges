@@ -1,0 +1,124 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+OUTPUT_FILE="badges.csv"
+
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [html_file]" >&2
+    exit 1
+fi
+
+HTML_FILE="${1:-badges.html}"
+
+if [ ! -f "$HTML_FILE" ]; then
+    echo "Error: File '$HTML_FILE' not found." >&2
+    exit 1
+fi
+
+process_badges() {
+    echo "game_name,hours_on_record,card_drops_earned,card_drops_received,card_drops_remaining,game_card_page_url"
+
+    gawk '
+# Function to properly escape a field for CSV: replace " with "" and enclose in "
+function escape_csv(field) {
+    gsub(/"/, "\"\"\"", field); # Escape internal double quotes
+    return "\"" field "\"";   # Enclose field in double quotes
+}
+
+BEGIN {
+    # Record Separator: A string that reliably precedes each game badge block.
+    # Using the id of the image scroll div seems like a good candidate.
+    RS = "id=\"image_group_scroll_badge_images_gamebadge_";
+    OFS = ",";
+    total_drops_remaining = 0;
+    apps_to_idle = 0;
+}
+
+# NR > 1 because the first record is everything before the first match of RS.
+# Each subsequent $0 starts with the unique part of the ID (e.g., APPID_level_foil)
+# followed by the rest of the HTML for that badge.
+NR > 1 {
+    current_block = $0; # $0 is the content for the current badge
+
+    game_card_page_url = "n/a";
+    # Try to find a gamecards URL. If not found, this is not a game badge we process.
+    # Regex matches .../gamecards/APPID/ or .../gamecards/APPID/?border=1 (for foil)
+    if (match(current_block, /<a class="badge_row_overlay" href="([^"]+(\/gamecards\/[0-9]+\/(\?border=1)?)[^"]*)">/, arr_url)) {
+        game_card_page_url = arr_url[1];
+    } else {
+        next; # Skip this record if no game card URL is found
+    }
+
+    game_name = "n/a";
+    if (match(current_block, /<div class="badge_title">(.*?)<\/div>/, title_div_arr)) {
+        temp_game_name = title_div_arr[1];
+        # Remove "View details" span and anything after it, effectively cleaning the title
+        gsub(/&nbsp;<span class="badge_view_details">.*?<\/span>.*/, "", temp_game_name);
+        # Specifically handle (Foil) text if it was part of a span, otherwise general tag removal handles it
+        gsub(/<span class="badge_foil_tag">\(Foil\)<\/span>/, " (Foil)", temp_game_name);
+        gsub(/<[^>]+>/, "", temp_game_name); # Remove any remaining HTML tags
+        gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", temp_game_name); # Trim whitespace
+        gsub(/\s+/, " ", temp_game_name); # Normalize multiple spaces to one
+        if (temp_game_name != "") {
+            game_name = temp_game_name;
+        }
+    }
+
+    hours_on_record = "n/a";
+    if (match(current_block, /<div class="badge_title_stats_playtime">\s*&nbsp;([0-9.]+)\s*hrs on record/, arr_hr)) {
+        hours_on_record = arr_hr[1];
+        gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", hours_on_record); # Trim whitespace/tabs
+    } else if (match(current_block, /<div class="badge_title_stats_playtime">\s*No playtime on record/, arr_hr)) {
+        hours_on_record = "0";
+    } else if (match(current_block, /<div class="badge_title_stats_playtime">\s*&nbsp;([^<]+)\s*on record/, arr_hr)) { # Catch other playtime texts like "X.Y on record"
+        hours_on_record = arr_hr[1];
+        gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", hours_on_record); # Trim whitespace/tabs
+        if (hours_on_record == "No playtime") hours_on_record = "0";
+    }
+
+    card_drops_remaining = "n/a";
+    if (match(current_block, /<span class="progress_info_bold">\s*([0-9]+)\s*card drops? remaining\s*<\/span>/, arr_cdr)) {
+        card_drops_remaining = arr_cdr[1];
+    } else if (match(current_block, /<span class="progress_info_bold">\s*No card drops remaining\s*<\/span>/, arr_cdr)) {
+        card_drops_remaining = "0";
+    }
+
+    card_drops_earned = "n/a";
+    if (match(current_block, /<div class="card_drop_info_header">Card drops earned: ([0-9]+)<\/div>/, arr_cde)) {
+        card_drops_earned = arr_cde[1];
+    }
+
+    card_drops_received = "n/a";
+    if (match(current_block, /<div class="card_drop_info_header">Card drops received: ([0-9]+)\s*<\/div>/, arr_cdrc)) {
+        card_drops_received = arr_cdrc[1];
+    }
+
+    # Only print if a game name was successfully extracted
+    if (game_name != "n/a" && game_name != "") {
+        print escape_csv(game_name) OFS \
+              escape_csv(hours_on_record) OFS \
+              escape_csv(card_drops_earned) OFS \
+              escape_csv(card_drops_received) OFS \
+              escape_csv(card_drops_remaining) OFS \
+              escape_csv(game_card_page_url);
+
+        # Track statistics
+        if (card_drops_remaining != "n/a" && card_drops_remaining ~ /^[0-9]+$/) {
+            remaining_int = int(card_drops_remaining);
+            total_drops_remaining += remaining_int;
+            if (remaining_int > 0) {
+                apps_to_idle++;
+            }
+        }
+    }
+}
+
+END {
+    # Output statistics to stderr
+    print "Drops remaining on this page: " total_drops_remaining "  Apps to idle on this page: " apps_to_idle > "/dev/stderr";
+}
+' "$HTML_FILE"
+}
+
+process_badges > "$OUTPUT_FILE"

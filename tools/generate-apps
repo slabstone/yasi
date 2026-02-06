@@ -1,0 +1,117 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+OUTPUT_FILE="apps.txt"
+
+while getopts "o:" opt; do
+    case $opt in
+        o)
+            OUTPUT_FILE="$OPTARG"
+            ;;
+        \?)
+            echo "Usage: $0 [-o output_file] [csv_file]" >&2
+            echo "  -o    Output file (default: apps.txt)" >&2
+            exit 1
+            ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [-o output_file] [csv_file]" >&2
+    echo "  -o    Output file (default: apps.txt)" >&2
+    exit 1
+fi
+
+CSV_FILE="${1:-badges.csv}"
+
+if [ ! -f "$CSV_FILE" ]; then
+    echo "Error: File '$CSV_FILE' not found." >&2
+    exit 1
+fi
+
+# Process CSV and generate apps.txt
+gawk '
+BEGIN {
+    FS = ",";
+    OFS = " ";
+}
+
+# Function to remove surrounding quotes from a field
+function unquote(field) {
+    if (field ~ /^".*"$/) {
+        field = substr(field, 2, length(field) - 2);
+        gsub(/""/, "\"", field);
+    }
+    return field;
+}
+
+# Parse CSV line respecting quoted fields
+function parse_csv_line(line, fields,    in_quote, field, char, i, field_count) {
+    field_count = 0;
+    field = "";
+    in_quote = 0;
+
+    for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1);
+
+        if (char == "\"") {
+            if (in_quote && substr(line, i+1, 1) == "\"") {
+                field = field "\"";
+                i++;
+            } else {
+                in_quote = !in_quote;
+            }
+        } else if (char == "," && !in_quote) {
+            fields[++field_count] = field;
+            field = "";
+        } else {
+            field = field char;
+        }
+    }
+    fields[++field_count] = field;
+    return field_count;
+}
+
+# Skip header row and find column indices
+NR == 1 {
+    num_fields = parse_csv_line($0, header_fields);
+    for (i = 1; i <= num_fields; i++) {
+        if (header_fields[i] == "card_drops_remaining") {
+            remaining_col = i;
+        } else if (header_fields[i] == "game_card_page_url") {
+            url_col = i;
+        }
+    }
+    if (!remaining_col || !url_col) {
+        print "Error: Required columns not found in CSV header" > "/dev/stderr";
+        exit 1;
+    }
+    next;
+}
+
+# Process data rows
+NR > 1 {
+    num_fields = parse_csv_line($0, data_fields);
+
+    if (num_fields < remaining_col || num_fields < url_col) {
+        next;
+    }
+
+    remaining = data_fields[remaining_col];
+    url = data_fields[url_col];
+
+    # Skip if remaining is not a positive number or is "n/a"
+    if (remaining == "n/a" || remaining == "0" || remaining !~ /^[0-9]+$/) {
+        next;
+    }
+
+    # Convert to integer to check if > 0
+    remaining_int = int(remaining);
+    if (remaining_int > 0) {
+        print url, "r" remaining_int;
+    }
+}
+' "$CSV_FILE" >> "$OUTPUT_FILE"
