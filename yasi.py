@@ -41,8 +41,8 @@ USER_STEAM_ID_64 = None
 STEAM_COMMUNITY_APPID = None
 TRADING_CARD_CONTEXT_ID = None
 DEFAULT_MONITORING_INTERVAL_SECONDS = None
-MAX_IDLE_MINUTES_PER_CARD = None # New global variable
-ENABLE_INVENTORY_CHECKING = None # New global variable
+MAX_IDLE_MINUTES_PER_CARD = None
+ENABLE_INVENTORY_CHECKING = None
 
 GAME_NAME_CACHE = {} # Cache for game names
 
@@ -60,8 +60,8 @@ def load_configuration():
         STEAM_COMMUNITY_APPID = app_config['steam_community_appid']
         TRADING_CARD_CONTEXT_ID = app_config['trading_card_context_id']
         DEFAULT_MONITORING_INTERVAL_SECONDS = int(app_config['default_monitoring_interval_seconds'])
-        MAX_IDLE_MINUTES_PER_CARD = int(app_config.get('max_idle_minutes_per_card', 30)) # Load new config
-        ENABLE_INVENTORY_CHECKING = bool(app_config.get('enable_inventory_checking', True)) # Load new config
+        MAX_IDLE_MINUTES_PER_CARD = int(app_config.get('max_idle_minutes_per_card', 30))
+        ENABLE_INVENTORY_CHECKING = bool(app_config.get('enable_inventory_checking', True))
         Colors.debug(f"Loaded application config from {config_json_path}")
     except FileNotFoundError:
         Colors.error(f"CRITICAL: Application configuration file 'config.json' not found in {script_dir}.")
@@ -71,28 +71,32 @@ def load_configuration():
         Colors.error(f"CRITICAL: Error parsing 'config.json': {e}. Check file structure and values.")
         sys.exit(1)
 
-    try:
-        with open(user_json_path, 'r') as f:
-            user_config = json.load(f)
-        USER_STEAM_ID_64 = user_config['steam_id_64']
-        Colors.debug(f"Loaded user config from {user_json_path}")
-    except FileNotFoundError:
-        Colors.error(f"CRITICAL: User configuration file 'user.json' not found in {script_dir}.")
-        Colors.error(f"Please create it based on 'user.json.tmpl' or ensure it's in the correct location.")
-        sys.exit(1)
-    except (KeyError, ValueError) as e:
-        Colors.error(f"CRITICAL: Error parsing 'user.json': {e}. Check file structure and values (expected 'steam_id_64').")
-        sys.exit(1)
+    # Only load user.json if inventory checking is enabled
+    if ENABLE_INVENTORY_CHECKING:
+        try:
+            with open(user_json_path, 'r') as f:
+                user_config = json.load(f)
+            USER_STEAM_ID_64 = user_config['steam_id_64']
+            Colors.debug(f"Loaded user config from {user_json_path}")
+        except FileNotFoundError:
+            Colors.error(f"CRITICAL: User configuration file 'user.json' not found in {script_dir}.")
+            Colors.error(f"Please create it based on 'user.json.tmpl' or ensure it's in the correct location.")
+            sys.exit(1)
+        except (KeyError, ValueError) as e:
+            Colors.error(f"CRITICAL: Error parsing 'user.json': {e}. Check file structure and values (expected 'steam_id_64').")
+            sys.exit(1)
 
-    if not isinstance(USER_STEAM_ID_64, str):
-        Colors.error("CRITICAL: 'steam_id_64' in 'user.json' must be a string.")
-        sys.exit(1)
+        if not isinstance(USER_STEAM_ID_64, str):
+            Colors.error("CRITICAL: 'steam_id_64' in 'user.json' must be a string.")
+            sys.exit(1)
 
-    USER_STEAM_ID_64 = USER_STEAM_ID_64.strip() # Store the stripped version
+        USER_STEAM_ID_64 = USER_STEAM_ID_64.strip()
 
-    if not USER_STEAM_ID_64: # Check after stripping
-        Colors.error("CRITICAL: 'steam_id_64' in 'user.json' cannot be empty.")
-        sys.exit(1)
+        if not USER_STEAM_ID_64: # Check after stripping
+            Colors.error("CRITICAL: 'steam_id_64' in 'user.json' cannot be empty.")
+            sys.exit(1)
+    else:
+        Colors.debug("Inventory checking disabled - skipping user.json load")
 
 # --- Steamworks Simulation ---
 class SteamSimulator:
@@ -101,8 +105,9 @@ class SteamSimulator:
     by directly loading and calling steam_api64.dll using ctypes.
     Requires steam_api64.dll.
     """
-    def __init__(self, app_id_str):
+    def __init__(self, app_id_str, game_name=None):
         self.app_id_str = str(app_id_str)
+        self.game_name = game_name if game_name else str(app_id_str)
         self.script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
         self.steam_appid_file_path = os.path.join(self.script_dir, "steam_appid.txt")
         self.steam_api_dll = None
@@ -145,7 +150,7 @@ class SteamSimulator:
             self.steam_api_dll = None
             return False
         except AttributeError as e:
-            Colors.error(f"A required SteamAPI function was not found in steam_api64.dll: {e}")
+            Colors.error(f"A required Steam API function was not found in steam_api64.dll: {e}")
             Colors.error("This might indicate an incorrect, outdated, or corrupted steam_api64.dll.")
             self.steam_api_dll = None
             return False
@@ -161,7 +166,7 @@ class SteamSimulator:
                 Colors.error("Failed to load Steam API DLL. Cannot initialize Steam simulation.")
                 return False
 
-        Colors.info(f"Initializing Steam for AppID: {self.app_id_str} (via direct DLL call)...")
+        Colors.info(f"Initializing Steam for {self.game_name}...")
 
         self._cleanup_appid_file()
 
@@ -175,13 +180,13 @@ class SteamSimulator:
 
         try:
             if not self.steam_api_dll.SteamAPI_InitSafe():
-                 Colors.error("Failed to initialize Steamworks (SteamAPI_InitSafe() returned False).")
+                 Colors.error("Failed to initialize Steam API (SteamAPI_InitSafe() returned False).")
                  Colors.error("Ensure Steam client is running. The game might also need to be in your library.")
                  self._cleanup_appid_file()
                  return False
 
-            Colors.info("Steamworks initialized successfully via direct DLL call.")
-            Colors.info(f"Steam should now show you as playing game with AppID {self.app_id_str}.")
+            Colors.info("Steam API initialized successfully.")
+            Colors.info(f"Steam should now show you as playing {self.game_name}.")
             return True
         except Exception as e:
             Colors.error(f"An unexpected error occurred during SteamAPI_InitSafe: {e}")
@@ -190,10 +195,10 @@ class SteamSimulator:
 
     def shutdown_steam(self):
         if self.steam_api_dll:
-            Colors.info("Shutting down Steamworks (direct DLL call)...")
+            Colors.info("Shutting down Steam API (direct DLL call)...")
             try:
                 self.steam_api_dll.SteamAPI_Shutdown()
-                Colors.info("Steamworks shut down.")
+                Colors.info("Steam API shut down.")
             except Exception as e:
                 Colors.error(f"An error occurred during SteamAPI_Shutdown: {e}")
 
@@ -223,7 +228,7 @@ def get_game_name(app_id):
         return GAME_NAME_CACHE[app_id_str]
 
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id_str}"
-    Colors.debug(f"Fetching game name for AppID {app_id_str} from {url}")
+    Colors.debug(f"Fetching game name for AppID {app_id_str} from Steam Store API")
     name_to_return = app_id_str  # Default to AppID string if fetching fails
 
     try:
@@ -239,8 +244,8 @@ def get_game_name(app_id):
             else:
                 Colors.warning(f"Could not find name in successful API response for AppID {app_id_str}.")
         else:
-            api_error_detail = data.get(app_id_str, 'Not found in response') if data else 'No data returned'
-            Colors.warning(f"API request for game name for AppID {app_id_str} not successful or data malformed. Detail: {api_error_detail}")
+            # Game is likely delisted or removed from the store
+            Colors.warning(f"Game AppID {app_id_str} not found in Steam Store (likely delisted). Using AppID as name.")
 
     except requests.exceptions.Timeout:
         Colors.warning(f"Timeout while fetching game name for AppID {app_id_str}.")
@@ -408,80 +413,7 @@ def parse_card_target(target_str: str):
     except ValueError:
         return None, None, f"Invalid number of cards '{target_str[1:]}'. Must be an integer."
 
-# --- Main Application Logic ---
-def process_single_game(app_id_to_idle, target_mode, target_value, monitoring_interval, steam_id_64):
-    Colors.info(f"--- Processing Game AppID: {app_id_to_idle} ---")
-    if target_mode == 't':
-        Colors.info(f"Mode: Total. Aiming for {target_value} card(s) for this game.")
-    elif target_mode == 'r':
-        Colors.info(f"Mode: Remaining. Aiming for {target_value} additional card(s) for this game.")
-    Colors.info(f"Inventory check interval: {monitoring_interval} seconds.")
-
-    steam_simulator = SteamSimulator(app_id_to_idle)
-    if not steam_simulator.init_steam():
-        Colors.error(f"Failed to initialize Steam simulation for AppID {app_id_to_idle}. Skipping this game.")
-        return False
-
-    Colors.info(f"Fetching initial card count for AppID {app_id_to_idle} (SteamID64: {steam_id_64})...")
-    initial_cards = get_steam_inventory_card_count(steam_id_64, app_id_to_idle)
-
-    if initial_cards == -1:
-        Colors.error(f"Could not get initial card count for AppID {app_id_to_idle}. Ensure inventory is public and accessible. Skipping this game.")
-        steam_simulator.shutdown_steam()
-        return False
-
-    Colors.info(f"Initial card count for AppID {app_id_to_idle}: {initial_cards}.")
-
-    actual_target_total_cards = 0
-    if target_mode == 't':
-        actual_target_total_cards = target_value
-    elif target_mode == 'r':
-        actual_target_total_cards = initial_cards + target_value
-        Colors.info(f"Current cards: {initial_cards}. Aiming for {target_value} more, so targeting a new total of {actual_target_total_cards} card(s).")
-
-    if target_mode == 't':
-        if initial_cards >= actual_target_total_cards:
-            Colors.info(f"Already have {initial_cards} card(s), which meets or exceeds the target total of {actual_target_total_cards}. Skipping AppID {app_id_to_idle}.")
-            steam_simulator.shutdown_steam()
-            return True
-
-    Colors.info(f"Monitoring AppID {app_id_to_idle} until inventory total reaches {actual_target_total_cards} card(s)... Press Ctrl+C to stop early for this game.")
-
-    current_total_cards_in_inventory = initial_cards
-    try:
-        while current_total_cards_in_inventory < actual_target_total_cards:
-            steam_simulator.run_callbacks()
-
-            Colors.debug(f"Waiting for {monitoring_interval} seconds before next inventory check for AppID {app_id_to_idle}...")
-            time.sleep(monitoring_interval)
-
-            fetched_cards = get_steam_inventory_card_count(steam_id_64, app_id_to_idle)
-            if fetched_cards == -1:
-                Colors.warning(f"Failed to check inventory for AppID {app_id_to_idle} on this cycle. Will retry.")
-                continue
-
-            if fetched_cards > current_total_cards_in_inventory:
-                Colors.info(f"[AppID {app_id_to_idle}] Card drop(s) detected! Inventory now has {fetched_cards} card(s) (was {current_total_cards_in_inventory}).")
-            elif fetched_cards < current_total_cards_in_inventory:
-                Colors.warning(f"[AppID {app_id_to_idle}] Card count decreased from {current_total_cards_in_inventory} to {fetched_cards}.")
-
-            current_total_cards_in_inventory = fetched_cards
-
-            if current_total_cards_in_inventory >= actual_target_total_cards:
-                Colors.info(f"[AppID {app_id_to_idle}] Target total of {actual_target_total_cards} card(s) reached! Current total: {current_total_cards_in_inventory}.")
-                break
-            else:
-                remaining_needed_for_target_total = actual_target_total_cards - current_total_cards_in_inventory
-                Colors.info(f"[AppID {app_id_to_idle}] Current: {current_total_cards_in_inventory}/{actual_target_total_cards}. Need {remaining_needed_for_target_total} more card(s) to reach target total.")
-
-    except KeyboardInterrupt:
-        Colors.info(f"\nMonitoring for AppID {app_id_to_idle} interrupted by user (Ctrl+C).")
-    finally:
-        Colors.info(f"Stopping game simulation for AppID {app_id_to_idle}...")
-        steam_simulator.shutdown_steam()
-        Colors.info(f"--- Finished processing Game AppID: {app_id_to_idle} ---")
-    return True
-
+# --- Helper Functions ---
 def determine_target_card_count(initial_card_count, target_spec):
     mode, value, error_detail = parse_card_target(target_spec)
     if error_detail:
@@ -530,7 +462,10 @@ def main():
 
     app_id_to_idle = args.app_id
     target_spec = args.card_target
-    monitoring_interval = args.interval # This is the effective interval to use
+    monitoring_interval = args.interval
+
+    Colors.info(f"--- YASI: Yet Another Steam Idler ---")
+    Colors.info(f"Working with AppID: {app_id_to_idle}")
 
     # Validate target specification when inventory checking is disabled
     if not ENABLE_INVENTORY_CHECKING:
@@ -547,14 +482,20 @@ def main():
             sys.exit(1)
         Colors.warning("Inventory checking is disabled - using timed idling mode only.")
 
-    game_name = get_game_name(app_id_to_idle) # Fetch game name
+    game_name = get_game_name(app_id_to_idle)
+    Colors.info(f"Game name: {game_name}")
 
-    Colors.info(f"--- YASI: Yet Another Steam Idler ---")
-    Colors.info(
-        f"Targeting AppID: {app_id_to_idle} ({game_name}) "
-        f"with card target: '{target_spec}'"
-    )
-    Colors.info(f"Monitoring interval: {monitoring_interval} seconds.")    # USER_STEAM_ID_64 is now used directly. Checks are done in load_configuration().
+    # Parse and explain target
+    mode, value, error_detail = parse_card_target(target_spec)
+    if error_detail:
+        Colors.error(f"Invalid target specification '{target_spec}': {error_detail}")
+        sys.exit(1)
+
+    target_explanation = f"{value} remaining card(s)" if mode == 'r' else f"total of {value} card(s)"
+    Colors.info(f"Target: {target_explanation} ('{target_spec}')")
+
+    if ENABLE_INVENTORY_CHECKING:
+        Colors.info(f"Monitoring interval: {monitoring_interval} seconds.")
 
     # --- Initial Card Count Check (Before Steam Init) ---
     initial_card_count = 0  # Default for when inventory checking is disabled
@@ -563,8 +504,7 @@ def main():
 
     if ENABLE_INVENTORY_CHECKING:
         Colors.info(
-            f"Performing initial card count check for AppID {app_id_to_idle} "
-            f"({game_name})..."
+            f"Performing initial card count check for {game_name}..."
         )
         initial_card_count = get_steam_inventory_card_count(
             USER_STEAM_ID_64, app_id_to_idle
@@ -572,14 +512,12 @@ def main():
 
         if initial_card_count == -1:
             Colors.error(
-                f"Failed to get initial card count for AppID {app_id_to_idle} "
-                f"({game_name}). Cannot proceed reliably."
+                f"Failed to get initial card count for {game_name}. Cannot proceed reliably."
             )
             sys.exit(1)
 
         Colors.info(
-            f"Initial card count for AppID {app_id_to_idle} ({game_name}): "
-            f"{initial_card_count}"
+            f"Initial card count for {game_name}: {initial_card_count}"
         )
 
         target_card_count, check_for_any_new_card = determine_target_card_count(
@@ -590,8 +528,7 @@ def main():
 
         if not check_for_any_new_card and initial_card_count >= target_card_count:
             Colors.info(
-                f"Target of {target_card_count} card(s) for AppID "
-                f"{app_id_to_idle} ({game_name}) already met or exceeded "
+                f"Target of {target_card_count} card(s) for {game_name} already met or exceeded "
                 f"(current: {initial_card_count}). No idling needed."
             )
             sys.exit(0)
@@ -603,12 +540,11 @@ def main():
         check_for_any_new_card = True  # Always true in timed mode
         Colors.info(
             f"Inventory checking disabled - will idle for {value} card drop(s) "
-            f"using timed mode for AppID {app_id_to_idle} ({game_name})."
+            f"using timed mode."
         )
 
     Colors.info(
-        f"Proceeding to initialize Steam simulation for "
-        f"AppID {app_id_to_idle} ({game_name})."
+        f"Initializing Steam simulation for {game_name}..."
     )
 
     # Calculate max idle time for this session
@@ -629,14 +565,14 @@ def main():
             f"to drop * {MAX_IDLE_MINUTES_PER_CARD} min/card)"        )
     # --- End of Initial Card Count Check ---
 
-    simulator = SteamSimulator(app_id_to_idle)
+    simulator = SteamSimulator(app_id_to_idle, game_name)
     if not simulator.init_steam():
-        Colors.error(f"Failed to initialize Steam simulation for AppID {app_id_to_idle} ({game_name}). Exiting.")
+        Colors.error(f"Failed to initialize Steam simulation for {game_name}. Exiting.")
         sys.exit(1)
 
     # Fast check mode: run for 5 seconds and exit
     if args.fast:
-        Colors.info(f"Fast check mode enabled. Running AppID {app_id_to_idle} ({game_name}) for 5 seconds...")
+        Colors.info(f"Fast check mode enabled. Running {game_name} for 5 seconds...")
         try:
             for i in range(5):
                 simulator.run_callbacks()
@@ -644,7 +580,7 @@ def main():
             Colors.info("Fast check complete. Shutting down...")
         finally:
             simulator.shutdown_steam()
-            Colors.info(f"--- Finished fast check for AppID: {app_id_to_idle} ({game_name}) ---")
+            Colors.info(f"--- Finished fast check for {game_name} ---")
         sys.exit(0)
 
     try:
@@ -653,13 +589,12 @@ def main():
 
         if ENABLE_INVENTORY_CHECKING:
             Colors.info(
-                f"Monitoring for card drops for AppID {app_id_to_idle} "
-                f"({game_name}). Target: {target_card_count} card(s). "
-                f"Checking every {monitoring_interval}s."
+                f"Monitoring for card drops for {game_name}. "
+                f"Target: {target_card_count} card(s). Checking every {monitoring_interval}s."
             )
         else:
             Colors.info(
-                f"Timed idling for AppID {app_id_to_idle} ({game_name}). "
+                f"Timed idling for {game_name}. "
                 f"Target: {target_card_count} card drop(s). Max time: "
                 f"{(max_idle_time_seconds / 60):.0f} minutes."
             )
@@ -670,26 +605,40 @@ def main():
         while True:
             simulator.run_callbacks()
 
-            # Check for max idle time limit
-            if max_idle_time_seconds > 0: # Only if a limit was set
-                elapsed_idle_time = time.time() - start_idle_time
-                if elapsed_idle_time >= max_idle_time_seconds:
-                    max_minutes_reached = max_idle_time_seconds / 60
-                    Colors.warning(
-                        f"Max idle time (~{max_minutes_reached:.0f} min) "
-                        f"reached for AppID {app_id_to_idle} ({game_name})."
-                    )
-                    Colors.info("Waiting 5 seconds for Steam to sync state before stopping...")
-                    time.sleep(5)
-                    break # Exit the idling loop
+            # Check for card drops (do this first so messages appear before any exit conditions)
+            current_time = time.time()
+            if ENABLE_INVENTORY_CHECKING and current_time - last_check_time >= monitoring_interval:
+                Colors.info(f"Checking inventory for {game_name}...")
+                fresh_inventory_count = get_steam_inventory_card_count(USER_STEAM_ID_64, app_id_to_idle)
+                last_check_time = current_time
+
+                if fresh_inventory_count == -1:
+                    Colors.warning(f"Failed to fetch inventory count during monitoring for {game_name}. Will retry.")
+                elif fresh_inventory_count > current_card_count:
+                    cards_gained = fresh_inventory_count - current_card_count
+                    Colors.info(f"New card drop detected for {game_name}! Count increased from {current_card_count} to {fresh_inventory_count}.")
+                    current_card_count = fresh_inventory_count
+                elif fresh_inventory_count < current_card_count:
+                    Colors.warning(f"Card count for {game_name} decreased from {current_card_count} to {fresh_inventory_count}. This is unusual. Continuing.")
+                    current_card_count = fresh_inventory_count
+                else:
+                    Colors.info(f"No new cards detected for {game_name}. Current count: {current_card_count}.")
+            elif not ENABLE_INVENTORY_CHECKING and current_time - last_check_time >= monitoring_interval:
+                # In timed mode, simulate card drops based on time elapsed
+                elapsed_minutes = (current_time - start_idle_time) / 60
+                expected_cards = int(elapsed_minutes / MAX_IDLE_MINUTES_PER_CARD)
+                if expected_cards > cards_dropped_this_session:
+                    cards_dropped_this_session = expected_cards
+                    Colors.info(f"Assumed card drop for {game_name} after {elapsed_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
+                last_check_time = current_time
 
             # Check if target is met
             if ENABLE_INVENTORY_CHECKING:
                 # In inventory checking mode, check against current card count
                 if current_card_count >= target_card_count:
                     Colors.info(
-                        f"Target of {target_card_count} cards met for AppID "
-                        f"{app_id_to_idle} ({game_name}). Current: {current_card_count}."
+                        f"Target of {target_card_count} cards met for {game_name}. "
+                        f"Current: {current_card_count}."
                     )
                     break
             else:
@@ -697,44 +646,38 @@ def main():
                 if cards_dropped_this_session >= target_card_count:
                     Colors.info(
                         f"Target of {target_card_count} card drop(s) assumed to be "
-                        f"met for AppID {app_id_to_idle} ({game_name}) after "
+                        f"met for {game_name} after "
                         f"{(time.time() - start_idle_time) / 60:.1f} minutes of idling."
                     )
                     break
 
-            current_time = time.time()
-            if ENABLE_INVENTORY_CHECKING and current_time - last_check_time >= monitoring_interval:
-                Colors.info(f"Checking inventory for AppID {app_id_to_idle} ({game_name})...")
-                fresh_inventory_count = get_steam_inventory_card_count(USER_STEAM_ID_64, app_id_to_idle)
-                last_check_time = current_time
+            # Check for max idle time limit
+            if max_idle_time_seconds > 0: # Only if a limit was set
+                elapsed_idle_time = time.time() - start_idle_time
+                if elapsed_idle_time >= max_idle_time_seconds:
+                    # Do a final card drop check in timed mode before exiting
+                    if not ENABLE_INVENTORY_CHECKING:
+                        elapsed_minutes = elapsed_idle_time / 60
+                        expected_cards = int(elapsed_minutes / MAX_IDLE_MINUTES_PER_CARD)
+                        if expected_cards > cards_dropped_this_session:
+                            cards_dropped_this_session = expected_cards
+                            Colors.info(f"Assumed card drop for {game_name} after {elapsed_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
 
-                if fresh_inventory_count == -1:
-                    Colors.warning(f"Failed to fetch inventory count during monitoring for AppID {app_id_to_idle} ({game_name}). Will retry.")
-                elif fresh_inventory_count > current_card_count:
-                    cards_gained = fresh_inventory_count - current_card_count
-                    Colors.info(f"New card drop detected for AppID {app_id_to_idle} ({game_name})! Count increased from {current_card_count} to {fresh_inventory_count}.")
-                    current_card_count = fresh_inventory_count
-                elif fresh_inventory_count < current_card_count:
-                    Colors.warning(f"Card count for AppID {app_id_to_idle} ({game_name}) decreased from {current_card_count} to {fresh_inventory_count}. This is unusual. Continuing.")
-                    current_card_count = fresh_inventory_count
-                else:
-                    Colors.info(f"No new cards detected for AppID {app_id_to_idle} ({game_name}). Current count: {current_card_count}.")
-            elif not ENABLE_INVENTORY_CHECKING and current_time - last_check_time >= monitoring_interval:
-                # In timed mode, simulate card drops based on time elapsed
-                elapsed_minutes = (current_time - start_idle_time) / 60
-                expected_cards = int(elapsed_minutes / MAX_IDLE_MINUTES_PER_CARD)
-                if expected_cards > cards_dropped_this_session:
-                    cards_dropped_this_session = expected_cards
-                    Colors.info(f"Assumed card drop for AppID {app_id_to_idle} ({game_name}) after {elapsed_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
-                last_check_time = current_time
+                    max_minutes_reached = max_idle_time_seconds / 60
+                    Colors.warning(
+                        f"Max idle time (~{max_minutes_reached:.0f} min) reached for {game_name}."
+                    )
+                    Colors.info("Waiting 5 seconds for Steam to sync state before stopping...")
+                    time.sleep(5)
+                    break # Exit the idling loop
 
             time.sleep(1)
     except KeyboardInterrupt:
-        Colors.info(f"\nMonitoring for AppID {app_id_to_idle} ({game_name}) interrupted by user (Ctrl+C).")
+        Colors.info(f"\nMonitoring for {game_name} interrupted by user (Ctrl+C).")
     finally:
-        Colors.info(f"Stopping game simulation for AppID {app_id_to_idle} ({game_name})...")
+        Colors.info(f"Stopping game simulation for {game_name}...")
         simulator.shutdown_steam()
-        Colors.info(f"--- Finished processing Game AppID: {app_id_to_idle} ({game_name}) ---")
+        Colors.info(f"--- Finished processing {game_name} (AppID: {app_id_to_idle}) ---")
 
 if __name__ == "__main__":
     main()
