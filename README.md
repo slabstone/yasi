@@ -151,6 +151,35 @@ This will:
 
 The `yasim.ps1` script itself supports a `-PauseBetweenGamesSeconds` command-line parameter that can override the value from `config.json`. However, the current `yasim.bat` is simplified to only pass the game list file path. To use this override, you would need to call `yasim.ps1` directly or modify `yasim.bat` to pass all arguments (`%*`).
 
+### Automatic Status Tracking
+
+When using `yasim.ps1` for batch processing, the script automatically tracks the status of each game by adding prefixes to lines in your game list file:
+
+*   **`# DONE `**: Prepended to lines where the game was successfully processed (yasi.py exited with code 0).
+*   **`# FAIL `**: Prepended to lines where the game encountered an error (yasi.py exited with a non-zero error code or failed to launch).
+
+This automatic marking helps you:
+*   Resume batch operations by identifying which games still need processing
+*   Track success/failure without manually monitoring the console output
+*   Keep a record of which games have been completed in your game list file
+
+**Important Notes:**
+*   Lines that already start with `#` (comments) are not modified, so previously marked lines won't be marked again.
+*   The original line content is preserved; only a status prefix is added.
+*   You can manually remove these prefixes to re-process specific games.
+*   The status constants (`$PREFIX_DONE` and `$PREFIX_FAIL`) are defined at the top of `yasim.ps1` for easy customization.
+
+**Example transformation:**
+```plaintext
+# Before processing:
+220 r2
+440 t5
+
+# After processing (success, failure):
+# DONE 220 r2
+# FAIL 440 t5
+```
+
 ## Logging
 
 Both `yasi.py` and `yasim.ps1` produce timestamped console output:

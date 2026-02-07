@@ -17,6 +17,42 @@ param (
     [string]$FilePath = "apps.txt"
 )
 
+# Status prefix constants
+$PREFIX_DONE = "# DONE "
+$PREFIX_FAIL = "# FAIL "
+
+# Function to update a line in apps.txt with a status prefix
+function Update-AppLine {
+    param(
+        [string]$FilePath,
+        [string]$OriginalLine,
+        [string]$Prefix
+    )
+
+    # Skip if line already has a prefix
+    if ($OriginalLine.TrimStart().StartsWith("#")) {
+        return
+    }
+
+    try {
+        $content = Get-Content -Path $FilePath -Raw
+        $lines = $content -split "`r?`n"
+
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -eq $OriginalLine) {
+                $lines[$i] = $Prefix + $OriginalLine
+                break
+            }
+        }
+
+        # Write back to file
+        $lines -join "`r`n" | Set-Content -Path $FilePath -NoNewline
+        Write-Host "Updated line in $FilePath with prefix: $Prefix"
+    } catch {
+        Write-Warning "Failed to update line in $FilePath : $($_.Exception.Message)"
+    }
+}
+
 # Get the directory where this script is located
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $YasiScriptPath = Join-Path -Path $ScriptDir -ChildPath "yasi.py"
@@ -47,12 +83,16 @@ Write-Host "---------------------------------"
 
 $gamesProcessedCount = 0
 try {
-    Get-Content $FilePath | ForEach-Object {
-        $line = $_.Trim()
+    # Load file content into memory first to avoid file locking issues
+    $fileLines = @(Get-Content $FilePath)
+
+    foreach ($lineFromFile in $fileLines) {
+        $line = $lineFromFile.Trim()
+        $originalLine = $lineFromFile  # Capture original line (untrimmed) for updating later
 
         # Skip empty lines and comments (lines starting with # or //)
         if ($line -eq "" -or $line.StartsWith("#") -or $line.StartsWith("//")) {
-            return # Skips to the next line in ForEach-Object
+            continue # Skips to the next line in foreach
         }
 
         $parts = $line -split '\s+' # Split by one or more whitespace characters
@@ -74,7 +114,7 @@ try {
             # Validate the extracted AppID
             if ($null -eq $appId) { # If $appId is still null, no valid pattern was matched
                 Write-Warning "Skipping malformed line: '$line'. Could not extract a valid AppID from '$rawAppIdInput'."
-                return # Skips to the next line in ForEach-Object
+                continue # Skips to the next line in foreach
             }
 
             # At this point, $appId should hold the numeric string AppID
@@ -98,12 +138,15 @@ try {
 
                 if ($exitCode -ne 0) {
                     Write-Warning "yasi.py exited with error code $exitCode for AppID $appId."
+                    Update-AppLine -FilePath $FilePath -OriginalLine $originalLine -Prefix $PREFIX_FAIL
                 } else {
                     Write-Host "Successfully processed AppID $appId."
+                    Update-AppLine -FilePath $FilePath -OriginalLine $originalLine -Prefix $PREFIX_DONE
                 }
             } catch {
                 # This catch block handles errors if PowerShell fails to launch the process (e.g., python not found)
                 Write-Error "An error occurred while trying to launch yasi.py for AppID ${appId}: $($_.Exception.Message)"
+                Update-AppLine -FilePath $FilePath -OriginalLine $originalLine -Prefix $PREFIX_FAIL
             }
 
             $gamesProcessedCount++
