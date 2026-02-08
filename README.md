@@ -103,6 +103,56 @@ YASI supports two operational modes controlled by the `enable_inventory_checking
     *   Estimates card drops based on idle time (using `max_idle_minutes_per_card` setting).
     *   Useful when inventory privacy is preferred or inventory monitoring is unreliable.
 
+### Save/Restore Progress (Timed Mode Only)
+
+When using **Timed Idling Mode**, YASI automatically saves your progress if you interrupt idling with `CTRL+C` or if the maximum idle time is reached. This allows you to resume where you left off the next time you idle the same game.
+
+**How it works:**
+
+*   **Automatic Save on Interruption**: When you press `CTRL+C` while idling, YASI saves the current state to `state.txt` including:
+    *   The game's AppID
+    *   The adjusted target (accounting for cards already assumed to have dropped)
+    *   The number of seconds already idled toward the next card drop
+
+*   **Automatic Resume**: When you start idling the same game with the same target specification, YASI automatically loads the saved progress and continues from where you left off.
+
+*   **Automatic Cleanup**: When the target is successfully met, the `state.txt` file is automatically cleared.
+
+**Example Scenario 1:**
+```bash
+# Start idling game 123456 for 3 remaining cards
+python yasi.py -a 123456 -c r3
+
+# After 9 minutes, you press CTRL+C
+# state.txt is saved with: 123456 r3 540
+
+# Later, restart idling the same game
+python yasi.py -a 123456 -c r3
+# YASI resumes with 540 seconds (9 minutes) already credited toward the first card
+```
+
+**Example Scenario 2:**
+```bash
+# Start idling game 654321 for 3 remaining cards
+python yasi.py -a 654321 -c r3
+
+# After 64 minutes, you press CTRL+C
+# 2 cards assumed dropped (2 × 30min), 4 minutes into the 3rd card
+# state.txt is saved with: 654321 r1 240
+
+# Later, restart idling the same game (even with different target)
+python yasi.py -a 654321 -c r3
+# YASI finds saved state and uses it: resumes with r1 target and 240s progress
+# The saved target (r1) takes priority over command-line (r3)
+```
+
+**Notes:**
+*   The `state.txt` file stores only one game at a time (most recent).
+*   **Saved state always takes priority** - if a save exists for the game, it will resume from that state regardless of what target you specify on the command line.
+*   The saved target reflects actual progress (cards already assumed dropped), so it overrides your command-line target.
+*   To start fresh for a game, manually delete `state.txt` before running.
+*   This feature is **only available in Timed Idling Mode** (`enable_inventory_checking: false`).
+
 ### 1. Single Game Idling (`yasi.py`)
 
 You can run `yasi.py` directly to idle a single game.

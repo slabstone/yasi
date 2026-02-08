@@ -396,6 +396,62 @@ def get_steam_inventory_card_count(steam_id_64, game_app_id_to_filter_for):
     Colors.debug(f"Completed paginated inventory fetch: {page_num} page(s), {total_items_processed} total items processed, {card_count} card(s) for Game AppID {game_app_id_to_filter_for}")
     return card_count
 
+# --- State File Functions ---
+def load_state_file(app_id):
+    """Load saved state for the given app_id from state.txt"""
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    state_file_path = os.path.join(script_dir, "state.txt")
+
+    if not os.path.exists(state_file_path):
+        return None, None
+
+    try:
+        with open(state_file_path, 'r') as f:
+            line = f.readline().strip()
+            if not line:
+                return None, None
+
+            parts = line.split()
+            if len(parts) != 3:
+                Colors.warning(f"Invalid state file format. Expected 3 fields, got {len(parts)}.")
+                return None, None
+
+            saved_appid, saved_target, saved_seconds = parts
+
+            if str(saved_appid) == str(app_id):
+                Colors.info(f"Loaded saved state: {saved_target} with {saved_seconds}s progress toward next card")
+                return saved_target, int(saved_seconds)
+            else:
+                return None, None
+
+    except Exception as e:
+        Colors.warning(f"Error reading state file: {e}")
+        return None, None
+
+def save_state_file(app_id, target_spec, seconds_idled):
+    """Save current idling state to state.txt"""
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    state_file_path = os.path.join(script_dir, "state.txt")
+
+    try:
+        with open(state_file_path, 'w') as f:
+            f.write(f"{app_id} {target_spec} {int(seconds_idled)}\n")
+        Colors.info(f"Saved idling state: {target_spec} with {int(seconds_idled)}s progress")
+    except Exception as e:
+        Colors.error(f"Error saving state file: {e}")
+
+def clear_state_file():
+    """Clear the state.txt file"""
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    state_file_path = os.path.join(script_dir, "state.txt")
+
+    if os.path.exists(state_file_path):
+        try:
+            os.remove(state_file_path)
+            Colors.debug(f"Cleared state file: {state_file_path}")
+        except Exception as e:
+            Colors.warning(f"Error clearing state file: {e}")
+
 # --- Helper Function for Card Target Parsing ---
 def parse_card_target(target_str: str):
     if not target_str or len(target_str) < 2:
@@ -583,6 +639,24 @@ def main():
             Colors.info(f"--- Finished fast check for {game_name} ---")
         sys.exit(0)
 
+    # Load saved state for timed mode (saved state takes priority)
+    saved_seconds_for_next_card = 0
+    if not ENABLE_INVENTORY_CHECKING:
+        saved_target, saved_seconds = load_state_file(app_id_to_idle)
+        if saved_target and saved_seconds is not None:
+            # Saved state takes priority - use saved target instead of command-line
+            if saved_target != target_spec:
+                Colors.warning(f"Saved state found with different target!")
+                Colors.warning(f"  Command-line target: '{target_spec}'")
+                Colors.warning(f"  Saved target: '{saved_target}' (will be used)")
+                Colors.warning(f"  Delete state.txt to start fresh")
+                target_spec = saved_target
+                # Recalculate target_card_count with saved target
+                mode, value, _ = parse_card_target(target_spec)
+                target_card_count = value
+            saved_seconds_for_next_card = saved_seconds
+            Colors.info(f"Resuming from saved state: {saved_seconds_for_next_card}s progress toward next card")
+
     try:
         current_card_count = initial_card_count
         cards_dropped_this_session = 0  # Track cards dropped during this idling session
@@ -624,12 +698,15 @@ def main():
                 else:
                     Colors.info(f"No new cards detected for {game_name}. Current count: {current_card_count}.")
             elif not ENABLE_INVENTORY_CHECKING and current_time - last_check_time >= monitoring_interval:
-                # In timed mode, simulate card drops based on time elapsed
-                elapsed_minutes = (current_time - start_idle_time) / 60
+                # In timed mode, simulate card drops based on time elapsed plus saved progress
+                total_elapsed_seconds = (current_time - start_idle_time) + saved_seconds_for_next_card
+                elapsed_minutes = total_elapsed_seconds / 60
                 expected_cards = int(elapsed_minutes / MAX_IDLE_MINUTES_PER_CARD)
                 if expected_cards > cards_dropped_this_session:
                     cards_dropped_this_session = expected_cards
-                    Colors.info(f"Assumed card drop for {game_name} after {elapsed_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
+                    # Calculate session time for this drop (actual drop time minus saved progress)
+                    session_drop_minutes = cards_dropped_this_session * MAX_IDLE_MINUTES_PER_CARD - (saved_seconds_for_next_card / 60)
+                    Colors.info(f"Assumed card drop for {game_name} after {session_drop_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
                 last_check_time = current_time
 
             # Check if target is met
@@ -640,6 +717,7 @@ def main():
                         f"Target of {target_card_count} cards met for {game_name}. "
                         f"Current: {current_card_count}."
                     )
+                    clear_state_file()  # Clear state on successful completion
                     break
             else:
                 # In timed mode, check against cards dropped this session
@@ -649,6 +727,7 @@ def main():
                         f"met for {game_name} after "
                         f"{(time.time() - start_idle_time) / 60:.1f} minutes of idling."
                     )
+                    clear_state_file()  # Clear state on successful completion
                     break
 
             # Check for max idle time limit
@@ -657,11 +736,14 @@ def main():
                 if elapsed_idle_time >= max_idle_time_seconds:
                     # Do a final card drop check in timed mode before exiting
                     if not ENABLE_INVENTORY_CHECKING:
-                        elapsed_minutes = elapsed_idle_time / 60
+                        total_elapsed_seconds = elapsed_idle_time + saved_seconds_for_next_card
+                        elapsed_minutes = total_elapsed_seconds / 60
                         expected_cards = int(elapsed_minutes / MAX_IDLE_MINUTES_PER_CARD)
                         if expected_cards > cards_dropped_this_session:
                             cards_dropped_this_session = expected_cards
-                            Colors.info(f"Assumed card drop for {game_name} after {elapsed_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
+                            # Calculate session time for this drop (actual drop time minus saved progress)
+                            session_drop_minutes = cards_dropped_this_session * MAX_IDLE_MINUTES_PER_CARD - (saved_seconds_for_next_card / 60)
+                            Colors.info(f"Assumed card drop for {game_name} after {session_drop_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
 
                     max_minutes_reached = max_idle_time_seconds / 60
                     Colors.warning(
@@ -669,11 +751,31 @@ def main():
                     )
                     Colors.info("Waiting 5 seconds for Steam to sync state before stopping...")
                     time.sleep(5)
+
+                    # Save state on max time reached (timed mode only)
+                    if not ENABLE_INVENTORY_CHECKING:
+                        total_elapsed_seconds = (time.time() - start_idle_time) + saved_seconds_for_next_card
+                        seconds_into_current_card = int(total_elapsed_seconds % (MAX_IDLE_MINUTES_PER_CARD * 60))
+                        remaining_target = target_card_count - cards_dropped_this_session
+                        if remaining_target > 0:
+                            save_state_file(app_id_to_idle, f"r{remaining_target}", seconds_into_current_card)
+
                     break # Exit the idling loop
 
             time.sleep(1)
     except KeyboardInterrupt:
         Colors.info(f"\nMonitoring for {game_name} interrupted by user (Ctrl+C).")
+
+        # Save state on CTRL-C (timed mode only)
+        if not ENABLE_INVENTORY_CHECKING:
+            total_elapsed_seconds = (time.time() - start_idle_time) + saved_seconds_for_next_card
+            seconds_into_current_card = int(total_elapsed_seconds % (MAX_IDLE_MINUTES_PER_CARD * 60))
+            remaining_target = target_card_count - cards_dropped_this_session
+            if remaining_target > 0:
+                save_state_file(app_id_to_idle, f"r{remaining_target}", seconds_into_current_card)
+            else:
+                Colors.info("Target already met, no need to save state.")
+                clear_state_file()
     finally:
         Colors.info(f"Stopping game simulation for {game_name}...")
         simulator.shutdown_steam()
