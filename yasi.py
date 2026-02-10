@@ -660,6 +660,7 @@ def main():
     try:
         current_card_count = initial_card_count
         cards_dropped_this_session = 0  # Track cards dropped during this idling session
+        time_of_last_drop_minutes = 0  # Track accumulated time at last drop for calculating per-card time
 
         if ENABLE_INVENTORY_CHECKING:
             Colors.info(
@@ -706,7 +707,15 @@ def main():
                     cards_dropped_this_session = expected_cards
                     # Calculate session time for this drop (actual drop time minus saved progress)
                     session_drop_minutes = cards_dropped_this_session * MAX_IDLE_MINUTES_PER_CARD - (saved_seconds_for_next_card / 60)
-                    Colors.info(f"Assumed card drop for {game_name} after {session_drop_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
+                    # Calculate time for current card
+                    current_card_minutes = session_drop_minutes - time_of_last_drop_minutes
+                    # Format message: first drop shows only total, subsequent drops show "current (total)"
+                    if cards_dropped_this_session == 1:
+                        time_str = f"{session_drop_minutes:.1f} minutes"
+                    else:
+                        time_str = f"{current_card_minutes:.1f} ({session_drop_minutes:.1f}) minutes"
+                    Colors.info(f"Assumed card drop for {game_name} after {time_str}. Estimated drops: {cards_dropped_this_session}.")
+                    time_of_last_drop_minutes = session_drop_minutes
                 last_check_time = current_time
 
             # Check if target is met
@@ -743,7 +752,15 @@ def main():
                             cards_dropped_this_session = expected_cards
                             # Calculate session time for this drop (actual drop time minus saved progress)
                             session_drop_minutes = cards_dropped_this_session * MAX_IDLE_MINUTES_PER_CARD - (saved_seconds_for_next_card / 60)
-                            Colors.info(f"Assumed card drop for {game_name} after {session_drop_minutes:.1f} minutes. Estimated drops: {cards_dropped_this_session}.")
+                            # Calculate time for current card
+                            current_card_minutes = session_drop_minutes - time_of_last_drop_minutes
+                            # Format message: first drop shows only total, subsequent drops show "current (total)"
+                            if cards_dropped_this_session == 1:
+                                time_str = f"{session_drop_minutes:.1f} minutes"
+                            else:
+                                time_str = f"{current_card_minutes:.1f} ({session_drop_minutes:.1f}) minutes"
+                            Colors.info(f"Assumed card drop for {game_name} after {time_str}. Estimated drops: {cards_dropped_this_session}.")
+                            time_of_last_drop_minutes = session_drop_minutes
 
                     max_minutes_reached = max_idle_time_seconds / 60
                     Colors.warning(
