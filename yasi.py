@@ -160,6 +160,7 @@ class SteamSimulator:
             return False
 
     def init_steam(self):
+        """Initialize Steam API. Returns True on success, False on failure."""
         if not self.steam_api_dll:
             Colors.debug("Steam API DLL is not loaded. Attempting to load...")
             if not self._load_steam_api_dll():
@@ -181,7 +182,7 @@ class SteamSimulator:
         try:
             if not self.steam_api_dll.SteamAPI_InitSafe():
                  Colors.error("Failed to initialize Steam API (SteamAPI_InitSafe() returned False).")
-                 Colors.error("Ensure Steam client is running. The game might also need to be in your library.")
+                 Colors.error("Steam client is not running. Please start Steam and try again.")
                  self._cleanup_appid_file()
                  return False
 
@@ -623,8 +624,7 @@ def main():
 
     simulator = SteamSimulator(app_id_to_idle, game_name)
     if not simulator.init_steam():
-        Colors.error(f"Failed to initialize Steam simulation for {game_name}. Exiting.")
-        sys.exit(1)
+        sys.exit(2)  # Exit code 2: Stop batch processing without marking as FAIL
 
     # Fast check mode: run for 5 seconds and exit
     if args.fast:

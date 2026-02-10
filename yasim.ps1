@@ -136,7 +136,17 @@ try {
                 & $PythonExecutable $YasiScriptPath @commandArgsArray
                 $exitCode = $LASTEXITCODE
 
-                if ($exitCode -ne 0) {
+                if ($exitCode -eq 2) {
+                    # Exit code 2 means Steam is not running - stop batch processing without marking as FAIL
+                    Write-Host ""
+                    Write-Host "========================================" -ForegroundColor Yellow
+                    Write-Host "Steam is not running." -ForegroundColor Yellow
+                    Write-Host "Stopping batch processing." -ForegroundColor Yellow
+                    Write-Host "Please start Steam and run yasim again." -ForegroundColor Yellow
+                    Write-Host "========================================" -ForegroundColor Yellow
+                    Write-Host ""
+                    exit 0
+                } elseif ($exitCode -ne 0) {
                     Write-Warning "yasi.py exited with error code $exitCode for AppID $appId."
                     Update-AppLine -FilePath $FilePath -OriginalLine $originalLine -Prefix $PREFIX_FAIL
                 } else {
